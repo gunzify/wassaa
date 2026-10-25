@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+/supabase/functions/.env
+/supabase/.temp/
+.wrangler/
+.freebuff/
+/backend/.legacy-firebase/

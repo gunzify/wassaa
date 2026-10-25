@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>WASSAA — Integrity Console</title>
+    <link rel="stylesheet" href="/admin/styles.css" />
+  </head>
+  <body>
+    <!-- Sign-in gate -->
+    <div id="gate" class="gate">
+      <div class="gate-card" autocomplete="off">
+        <div class="wordmark">WASSAA</div>
+        <h1>Integrity console</h1>
+        <p class="muted">Sign in with an approved Wassaa integrity account. Access is logged.</p>
+        <div id="google-admin-button"></div>
+        <p id="gate-error" class="error" role="alert"></p>
+      </div>
+    </div>
+
+    <!-- Console -->
+    <div id="app" class="app hidden">
+      <header class="topbar">
+        <div class="brand"><span class="wordmark">WASSAA</span><span class="tag">Integrity console</span></div>
+        <nav class="tabs" role="tablist">
+          <button class="tab active" data-tab="verifications" role="tab">Verifications <span id="count-verifications" class="pill">0</span></button>
+          <button class="tab" data-tab="reports" role="tab">Reports <span id="count-reports" class="pill">0</span></button>
+          <button class="tab" data-tab="audit" role="tab">Audit log</button>
+        </nav>
+        <div class="top-actions">
+          <span id="storage-flag" class="flag"></span>
+          <button id="refresh" class="btn ghost" type="button">Refresh</button>
+          <button id="lock" class="btn ghost" type="button">Lock</button>
+        </div>
+      </header>
+
+      <main>
+        <section id="panel-verifications" class="panel">
+          <p class="hint">Compare the ID photo with the selfie, then with the name and date of birth on the profile. Approve only when all three agree.</p>
+          <div id="queue" class="queue"></div>
+        </section>
+
+        <section id="panel-reports" class="panel hidden">
+          <p class="hint">Reports are user-submitted. Blocking an account ends its sessions immediately and hides it from discovery.</p>
+          <div id="reports" class="queue"></div>
+        </section>
+
+        <section id="panel-audit" class="panel hidden">
+          <p class="hint">Every decision on this console is appended here. Entries cannot be edited or removed from the panel.</p>
+          <div id="audit" class="audit"></div>
+        </section>
+      </main>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </div>
+
+    <script src="/admin/app.js"></script>
+  </body>
+</html>

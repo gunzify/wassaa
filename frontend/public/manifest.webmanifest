@@ -1,0 +1,22 @@
+{
+  "name": "WASSAA — For people who are done with casual",
+  "short_name": "WASSAA",
+  "description": "Verified dating for Nigeria's uniformed and civilian professionals.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F7F5F0",
+  "theme_color": "#B85A3C",
+  "lang": "en-NG",
+  "categories": ["social", "lifestyle"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Discover", "url": "/", "description": "Browse your match queue" }
+  ]
+}

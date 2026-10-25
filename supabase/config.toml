@@ -1,0 +1,7 @@
+project_id = "wassaa"
+
+[functions.api]
+verify_jwt = false
+
+[functions.send-sms]
+verify_jwt = false

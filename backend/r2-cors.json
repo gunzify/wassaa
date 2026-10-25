@@ -1,0 +1,26 @@
+﻿{
+    "rules":  [
+                  {
+                      "allowed":  {
+                                      "origins":  [
+                                                      "http://localhost:5173",
+                                                      "http://localhost:3000",
+                                                      "http://localhost:4173",
+                                                      "https://wassaa.app"
+                                                  ],
+                                      "methods":  [
+                                                      "GET",
+                                                      "PUT",
+                                                      "HEAD"
+                                                  ],
+                                      "headers":  [
+                                                      "content-type"
+                                                  ]
+                                  },
+                      "exposeHeaders":  [
+                                            "etag"
+                                        ],
+                      "maxAgeSeconds":  3600
+                  }
+              ]
+}

@@ -1,0 +1,876 @@
+import express, { Request, Response, NextFunction } from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = Number(process.env.PORT) || 3000;
+
+// Security & Parsing Middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Custom Security Headers (Anti-Data Leaks & Protection)
+app.use((req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=*, microphone=*');
+  next();
+});
+
+// --- IN-MEMORY DATABASE & BACKEND STATE ---
+
+interface StoredUser {
+  id: string;
+  phone: string;
+  name: string;
+  age: number;
+  gender: 'female' | 'male';
+  professionCategory: string;
+  professionTitle: string;
+  service?: string;
+  rank?: string;
+  dutyStation?: string;
+  city: string;
+  state: string;
+  distanceKm: number;
+  bio: string;
+  photos: string[];
+  interests: string[];
+  intentions: string[];
+  verification: {
+    status: 'verified' | 'pending' | 'not_started';
+    verifiedAt?: string;
+    hasGovernmentId: boolean;
+    hasLiveSelfie: boolean;
+    documentType?: string;
+    cryptographicBadgeId?: string;
+  };
+  privacy: {
+    serviceVisibility: 'public' | 'matches' | 'private';
+    rankVisibility: 'public' | 'matches' | 'private';
+    verificationDisplay: 'badge' | 'service_badge' | 'minimal';
+    chatNotifications: boolean;
+    twoFactorAuth: boolean;
+    privateIntroductionOptIn: boolean;
+  };
+  tier: 'free' | 'premium' | 'hyper_premium';
+  likesGiven: string[]; // user IDs this user liked
+  passesGiven: string[];
+}
+
+interface StoredMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  text?: string;
+  timestamp: string;
+  voiceNote?: {
+    durationSeconds: number;
+    durationLabel: string;
+    audioWaveform: number[];
+  };
+  mediaUrl?: string;
+  caption?: string;
+}
+
+// Initial Database Seeding
+const DB_USERS: Record<string, StoredUser> = {
+  'user-chinwe': {
+    id: 'user-chinwe',
+    phone: '+2348031234567',
+    name: 'Chinwe',
+    age: 26,
+    gender: 'female',
+    professionCategory: 'Healthcare',
+    professionTitle: 'Healthcare Specialist',
+    dutyStation: 'Lagos Island Maternity Hospital',
+    city: 'Lagos',
+    state: 'Lagos',
+    distanceKm: 0,
+    bio: "Kind heart, big dreams. Let's build something real.",
+    photos: ['/src/assets/images/nigerian_police_officer_1792268560885.jpg'],
+    interests: ['Travel', 'Good Food', 'Fitness'],
+    intentions: ['Long-term relationship', 'Marriage'],
+    verification: {
+      status: 'verified',
+      verifiedAt: '2026-10-01',
+      hasGovernmentId: true,
+      hasLiveSelfie: true,
+      documentType: 'NIN',
+      cryptographicBadgeId: 'WSS-VER-2026-NGA-9014'
+    },
+    privacy: {
+      serviceVisibility: 'matches',
+      rankVisibility: 'private',
+      verificationDisplay: 'badge',
+      chatNotifications: true,
+      twoFactorAuth: true,
+      privateIntroductionOptIn: true
+    },
+    tier: 'free',
+    likesGiven: ['user-amara', 'user-tunde'],
+    passesGiven: []
+  },
+  'user-tunde': {
+    id: 'user-tunde',
+    phone: '+2348029988771',
+    name: 'Tunde',
+    age: 29,
+    gender: 'male',
+    professionCategory: 'Military',
+    professionTitle: 'Military',
+    service: 'Nigerian Army',
+    rank: 'Lieutenant',
+    dutyStation: 'Bonny Camp, Victoria Island',
+    city: 'Lagos',
+    state: 'Lagos',
+    distanceKm: 5,
+    bio: 'Disciplined in service, easygoing with family and friends. Passionate about fitness, good conversation over suya, and finding a genuine partner who values integrity.',
+    photos: [
+      '/src/assets/images/wassaa_tunde_military_1792299945389.jpg',
+      '/src/assets/images/nigerian_army_officer_1792268544149.jpg'
+    ],
+    interests: ['Fitness', 'Travel', 'Good Food', 'Reading', 'Football'],
+    intentions: ['Long-term relationship', 'Marriage'],
+    verification: {
+      status: 'verified',
+      verifiedAt: '2026-10-02',
+      hasGovernmentId: true,
+      hasLiveSelfie: true,
+      documentType: 'ServiceWarrant',
+      cryptographicBadgeId: 'WSS-VER-2026-NGA-4412'
+    },
+    privacy: {
+      serviceVisibility: 'matches',
+      rankVisibility: 'private',
+      verificationDisplay: 'badge',
+      chatNotifications: true,
+      twoFactorAuth: true,
+      privateIntroductionOptIn: true
+    },
+    tier: 'premium',
+    likesGiven: ['user-chinwe'],
+    passesGiven: []
+  },
+  'user-amara': {
+    id: 'user-amara',
+    phone: '+2348051122334',
+    name: 'Amara',
+    age: 27,
+    gender: 'female',
+    professionCategory: 'Healthcare',
+    professionTitle: 'Nurse',
+    dutyStation: 'National Hospital Abuja',
+    city: 'Abuja',
+    state: 'FCT',
+    distanceKm: 8,
+    bio: "I'm a caring, ambitious and fun-loving person. I enjoy good conversations, new experiences and building something meaningful.",
+    photos: ['/src/assets/images/wassaa_amara_nurse_1792299946203.jpg'],
+    interests: ['Travel', 'Movies', 'Fitness', 'Cooking'],
+    intentions: ['Long-term relationship', 'Meaningful connection'],
+    verification: {
+      status: 'verified',
+      verifiedAt: '2026-09-18',
+      hasGovernmentId: true,
+      hasLiveSelfie: true,
+      documentType: 'NIN',
+      cryptographicBadgeId: 'WSS-VER-2026-NGA-1092'
+    },
+    privacy: {
+      serviceVisibility: 'public',
+      rankVisibility: 'public',
+      verificationDisplay: 'badge',
+      chatNotifications: true,
+      twoFactorAuth: false,
+      privateIntroductionOptIn: true
+    },
+    tier: 'free',
+    likesGiven: ['user-chinwe'],
+    passesGiven: []
+  },
+  'user-blessing': {
+    id: 'user-blessing',
+    phone: '+2348143322110',
+    name: 'Blessing',
+    age: 31,
+    gender: 'female',
+    professionCategory: 'Police',
+    professionTitle: 'Police',
+    service: 'Nigerian Police Force',
+    rank: 'Assistant Superintendent (ASP)',
+    dutyStation: 'Rivers State Police Command',
+    city: 'Port Harcourt',
+    state: 'Rivers',
+    distanceKm: 14,
+    bio: 'Dedicated public safety officer by day, salsa dancer and podcast fan by night. Looking for someone grounded who values open communication and mutual respect.',
+    photos: ['/src/assets/images/nigerian_police_officer_1792268560885.jpg'],
+    interests: ['Salsa', 'Podcasts', 'Beach Walks', 'Fine Dining'],
+    intentions: ['Long-term relationship'],
+    verification: {
+      status: 'verified',
+      verifiedAt: '2026-09-24',
+      hasGovernmentId: true,
+      hasLiveSelfie: true,
+      documentType: 'ServiceWarrant',
+      cryptographicBadgeId: 'WSS-VER-2026-NGA-3391'
+    },
+    privacy: {
+      serviceVisibility: 'matches',
+      rankVisibility: 'private',
+      verificationDisplay: 'badge',
+      chatNotifications: true,
+      twoFactorAuth: true,
+      privateIntroductionOptIn: true
+    },
+    tier: 'free',
+    likesGiven: ['user-chinwe'],
+    passesGiven: []
+  },
+  'user-efe': {
+    id: 'user-efe',
+    phone: '+2348074455667',
+    name: 'Efe',
+    age: 26,
+    gender: 'male',
+    professionCategory: 'Engineering',
+    professionTitle: 'Engineer',
+    dutyStation: 'Petrochemical Infrastructure',
+    city: 'Uyo',
+    state: 'Akwa Ibom',
+    distanceKm: 22,
+    bio: 'Software & mechanical systems engineer. Huge fan of Afrobeats, tech startups, exploring serene landscapes, and cooking spicy native delicacies.',
+    photos: ['/src/assets/images/nigerian_paramilitary_officer_1792268545521.jpg'],
+    interests: ['Technology', 'Music', 'Road Trips', 'Cooking'],
+    intentions: ['Dating & See where it leads'],
+    verification: {
+      status: 'verified',
+      verifiedAt: '2026-10-10',
+      hasGovernmentId: true,
+      hasLiveSelfie: true,
+      documentType: 'NIN'
+    },
+    privacy: {
+      serviceVisibility: 'public',
+      rankVisibility: 'public',
+      verificationDisplay: 'badge',
+      chatNotifications: true,
+      twoFactorAuth: false,
+      privateIntroductionOptIn: false
+    },
+    tier: 'free',
+    likesGiven: [],
+    passesGiven: []
+  },
+  'user-zara': {
+    id: 'user-zara',
+    phone: '+2348123344556',
+    name: 'Zara',
+    age: 28,
+    gender: 'female',
+    professionCategory: 'Education',
+    professionTitle: 'Teacher',
+    dutyStation: 'Federal Academy Kaduna',
+    city: 'Kaduna',
+    state: 'Kaduna',
+    distanceKm: 18,
+    bio: 'Literature educator with a deep love for poetry, acoustic guitar, quiet picnics, and Northern cuisine. Looking for kindness and authentic connection.',
+    photos: ['/src/assets/images/nigerian_customs_officer_1792268562125.jpg'],
+    interests: ['Literature', 'Acoustic Music', 'Baking', 'Volunteering'],
+    intentions: ['Marriage / Serious partnership'],
+    verification: {
+      status: 'verified',
+      verifiedAt: '2026-08-30',
+      hasGovernmentId: true,
+      hasLiveSelfie: true,
+      documentType: 'Passport'
+    },
+    privacy: {
+      serviceVisibility: 'public',
+      rankVisibility: 'public',
+      verificationDisplay: 'badge',
+      chatNotifications: true,
+      twoFactorAuth: true,
+      privateIntroductionOptIn: true
+    },
+    tier: 'free',
+    likesGiven: [],
+    passesGiven: []
+  },
+  'user-amina': {
+    id: 'user-amina',
+    phone: '+2348098877665',
+    name: 'Amina',
+    age: 28,
+    gender: 'female',
+    professionCategory: 'Military',
+    professionTitle: 'Military',
+    service: 'Nigerian Navy',
+    rank: 'Sub-Lieutenant',
+    dutyStation: 'Western Naval Command',
+    city: 'Lagos',
+    state: 'Lagos',
+    distanceKm: 6,
+    bio: 'Naval officer with a love for ocean breezes, architectural photography, and discovering peaceful waterfront restaurants in Victoria Island.',
+    photos: ['/src/assets/images/nigerian_navy_officer_1792268545125.jpg'],
+    interests: ['Swimming', 'Photography', 'Jazz', 'Waterfront Cafes'],
+    intentions: ['Long-term relationship'],
+    verification: {
+      status: 'verified',
+      verifiedAt: '2026-09-14',
+      hasGovernmentId: true,
+      hasLiveSelfie: true,
+      documentType: 'ServiceWarrant',
+      cryptographicBadgeId: 'WSS-VER-2026-NGA-7714'
+    },
+    privacy: {
+      serviceVisibility: 'matches',
+      rankVisibility: 'private',
+      verificationDisplay: 'badge',
+      chatNotifications: true,
+      twoFactorAuth: true,
+      privateIntroductionOptIn: true
+    },
+    tier: 'free',
+    likesGiven: ['user-chinwe'],
+    passesGiven: []
+  }
+};
+
+const DB_MESSAGES: Record<string, StoredMessage[]> = {
+  'match-amara': [
+    {
+      id: 'msg-1',
+      conversationId: 'match-amara',
+      senderId: 'user-amara',
+      text: 'Hey! I noticed we both love travel. That’s a great start! 😊',
+      timestamp: '8:24 PM'
+    },
+    {
+      id: 'msg-2',
+      conversationId: 'match-amara',
+      senderId: 'user-chinwe',
+      text: "Haha yes! I've been to a few amazing places. Where's your next stop?",
+      timestamp: '8:26 PM'
+    },
+    {
+      id: 'msg-3',
+      conversationId: 'match-amara',
+      senderId: 'user-amara',
+      text: 'Probably Cape Town. You?',
+      timestamp: '8:28 PM'
+    },
+    {
+      id: 'msg-4',
+      conversationId: 'match-amara',
+      senderId: 'user-chinwe',
+      text: "That's on my list too! Maybe we can plan a trip together? 😊",
+      timestamp: '8:30 PM'
+    },
+    {
+      id: 'msg-5',
+      conversationId: 'match-amara',
+      senderId: 'user-amara',
+      timestamp: '8:32 PM',
+      voiceNote: {
+        durationSeconds: 12,
+        durationLabel: '0:12',
+        audioWaveform: [30, 45, 80, 60, 90, 75, 40, 60, 85, 95, 70, 50, 65, 80, 40, 30]
+      }
+    },
+    {
+      id: 'msg-6',
+      conversationId: 'match-amara',
+      senderId: 'user-amara',
+      timestamp: '8:34 PM',
+      mediaUrl: '/src/assets/images/wassaa_sunset_view_1792299959972.jpg',
+      caption: 'Took this on my last trip! Sunset in the hills.'
+    }
+  ],
+  'match-tunde': [
+    {
+      id: 'tunde-1',
+      conversationId: 'match-tunde',
+      senderId: 'user-tunde',
+      text: 'Hello Chinwe! Glad we connected on WASSAA. Your bio resonates deeply.',
+      timestamp: 'Yesterday 6:15 PM'
+    },
+    {
+      id: 'tunde-2',
+      conversationId: 'match-tunde',
+      senderId: 'user-chinwe',
+      text: 'Hi Tunde! Thank you so much. It is rare to meet people who appreciate calm authenticity.',
+      timestamp: 'Yesterday 6:30 PM'
+    },
+    {
+      id: 'tunde-3',
+      conversationId: 'match-tunde',
+      senderId: 'user-tunde',
+      text: 'Good evening Chinwe! Hope your hospital shift was peaceful today.',
+      timestamp: 'Yesterday 8:00 PM'
+    }
+  ]
+};
+
+// OTP Sessions (Rate limited)
+interface OtpSession {
+  phone: string;
+  code: string;
+  expiresAt: number;
+  attempts: number;
+}
+const ACTIVE_OTPS: Record<string, OtpSession> = {};
+
+// Ephemeral Verification Audit Ledger (0 bytes stored)
+interface VerificationAuditEntry {
+  userId: string;
+  documentType: string;
+  processedAt: string;
+  rawStorageBytesRetained: 0;
+  biometricLivenessMatchScore: string;
+  cryptographicBadgeId: string;
+}
+const VERIFICATION_AUDIT_LOG: VerificationAuditEntry[] = [];
+
+// Payments Ledger
+interface PaymentRecord {
+  id: string;
+  userId: string;
+  reference: string;
+  amountMinor: number;
+  currency: string;
+  status: 'success' | 'pending' | 'failed';
+  planId: string;
+  verifiedAt: string;
+}
+const PAYMENTS_LEDGER: PaymentRecord[] = [];
+
+// --- REST API ENDPOINTS (/api/v1/*) ---
+
+// 1. Request Phone OTP
+app.post('/api/v1/auth/otp/request', (req: Request, res: Response) => {
+  const { phone } = req.body;
+  if (!phone || typeof phone !== 'string') {
+    return res.status(400).json({ error: 'Valid Nigerian E.164 phone number required (+234...)' });
+  }
+
+  // Generate 6-digit OTP
+  const code = '123456'; // Default sandbox PIN code, easily predictable for testing
+  ACTIVE_OTPS[phone] = {
+    phone,
+    code,
+    expiresAt: Date.now() + 5 * 60 * 1000,
+    attempts: 0
+  };
+
+  return res.json({
+    success: true,
+    message: 'OTP SMS code dispatched successfully',
+    phone,
+    expiresInSeconds: 300,
+    testCode: code // Exposed for development testing convenience
+  });
+});
+
+// 2. Verify OTP
+app.post('/api/v1/auth/otp/verify', (req: Request, res: Response) => {
+  const { phone, code } = req.body;
+  const session = ACTIVE_OTPS[phone];
+
+  if (!session || Date.now() > session.expiresAt) {
+    return res.status(400).json({ error: 'OTP expired or not found. Please request a new code.' });
+  }
+
+  session.attempts += 1;
+  if (session.attempts > 5) {
+    delete ACTIVE_OTPS[phone];
+    return res.status(429).json({ error: 'Too many incorrect attempts. Please request a new code.' });
+  }
+
+  if (code !== session.code && code !== '123456') {
+    return res.status(400).json({ error: 'Invalid verification code.' });
+  }
+
+  // Clean up
+  delete ACTIVE_OTPS[phone];
+
+  // Return authenticated user (default to Chinwe)
+  const user = DB_USERS['user-chinwe'];
+  return res.json({
+    success: true,
+    message: 'Phone verified successfully',
+    sessionToken: `wss_sess_${Date.now()}_auth`,
+    user
+  });
+});
+
+// 3. Get Current User Profile
+app.get('/api/v1/me/profile', (req: Request, res: Response) => {
+  const user = DB_USERS['user-chinwe'];
+  return res.json({ user });
+});
+
+// 4. Update Profile
+app.patch('/api/v1/me/profile', (req: Request, res: Response) => {
+  const user = DB_USERS['user-chinwe'];
+  const { name, bio, interests, city, state, professionCategory, professionTitle, service } = req.body;
+
+  if (name) user.name = String(name).slice(0, 50);
+  if (bio) user.bio = String(bio).slice(0, 150);
+  if (Array.isArray(interests)) user.interests = interests.slice(0, 10);
+  if (city) user.city = city;
+  if (state) user.state = state;
+  if (professionCategory) user.professionCategory = professionCategory;
+  if (professionTitle) user.professionTitle = professionTitle;
+  if (service) user.service = service;
+
+  return res.json({ success: true, user });
+});
+
+// 5. Update Privacy Settings
+app.patch('/api/v1/me/privacy', (req: Request, res: Response) => {
+  const user = DB_USERS['user-chinwe'];
+  const { serviceVisibility, rankVisibility, verificationDisplay, chatNotifications, twoFactorAuth } = req.body;
+
+  if (serviceVisibility) user.privacy.serviceVisibility = serviceVisibility;
+  if (rankVisibility) user.privacy.rankVisibility = rankVisibility;
+  if (verificationDisplay) user.privacy.verificationDisplay = verificationDisplay;
+  if (typeof chatNotifications === 'boolean') user.privacy.chatNotifications = chatNotifications;
+  if (typeof twoFactorAuth === 'boolean') user.privacy.twoFactorAuth = twoFactorAuth;
+
+  return res.json({ success: true, privacy: user.privacy });
+});
+
+// 6. Ephemeral Identity Verification (Zero Storage Guaranteed)
+app.post('/api/v1/verification/submit', (req: Request, res: Response) => {
+  const { documentType, serviceNumber } = req.body;
+  const user = DB_USERS['user-chinwe'];
+
+  // Simulate in-memory inspection and immediate purge
+  const badgeCode = `WSS-VER-2026-NGA-${Math.floor(1000 + Math.random() * 9000)}`;
+  
+  user.verification = {
+    status: 'verified',
+    verifiedAt: new Date().toISOString().split('T')[0],
+    hasGovernmentId: true,
+    hasLiveSelfie: true,
+    documentType: documentType || 'NIN',
+    cryptographicBadgeId: badgeCode
+  };
+
+  const auditEntry: VerificationAuditEntry = {
+    userId: user.id,
+    documentType: documentType || 'NIN',
+    processedAt: new Date().toISOString(),
+    rawStorageBytesRetained: 0,
+    biometricLivenessMatchScore: '99.4%',
+    cryptographicBadgeId: badgeCode
+  };
+  VERIFICATION_AUDIT_LOG.push(auditEntry);
+
+  return res.json({
+    success: true,
+    message: 'Identity and facial liveness confirmed. ID buffer purged from memory.',
+    audit: auditEntry,
+    user
+  });
+});
+
+// 7. Smart Discovery Feed (With Server-Side Privacy Filtering)
+app.get('/api/v1/discovery', (req: Request, res: Response) => {
+  const currentUser = DB_USERS['user-chinwe'];
+  const { profession, service, city, maxDistance } = req.query;
+
+  // Filter out self and already swiped profiles
+  let candidates = Object.values(DB_USERS).filter(
+    (u) => u.id !== currentUser.id && !currentUser.likesGiven.includes(u.id) && !currentUser.passesGiven.includes(u.id)
+  );
+
+  // Apply filters
+  if (profession && profession !== 'All') {
+    candidates = candidates.filter((u) => u.professionCategory === profession);
+  }
+  if (service && service !== 'All') {
+    candidates = candidates.filter((u) => u.service === service);
+  }
+  if (city && city !== 'All') {
+    candidates = candidates.filter((u) => u.city.toLowerCase() === String(city).toLowerCase());
+  }
+  if (maxDistance) {
+    const dist = Number(maxDistance);
+    candidates = candidates.filter((u) => u.distanceKm <= dist);
+  }
+
+  // Server-Side Privacy Masking Enforcement (Anti-Leakage)
+  const sanitized = candidates.map((u) => {
+    const isMutualMatch = currentUser.likesGiven.includes(u.id) && u.likesGiven.includes(currentUser.id);
+    
+    // Hide service unless public or mutual match
+    let visibleService = u.service;
+    if (u.privacy.serviceVisibility === 'private') {
+      visibleService = undefined;
+    } else if (u.privacy.serviceVisibility === 'matches' && !isMutualMatch) {
+      visibleService = undefined;
+    }
+
+    // Hide rank unless explicitly public
+    let visibleRank = u.rank;
+    if (u.privacy.rankVisibility === 'private' || (u.privacy.rankVisibility === 'matches' && !isMutualMatch)) {
+      visibleRank = undefined;
+    }
+
+    return {
+      id: u.id,
+      name: u.name,
+      age: u.age,
+      gender: u.gender,
+      professionCategory: u.professionCategory,
+      professionTitle: u.professionTitle,
+      service: visibleService,
+      rank: visibleRank,
+      city: u.city,
+      state: u.state,
+      distanceKm: u.distanceKm,
+      bio: u.bio,
+      photos: u.photos,
+      interests: u.interests,
+      intentions: u.intentions,
+      verification: {
+        status: u.verification.status,
+        verifiedAt: u.verification.verifiedAt
+      }
+    };
+  });
+
+  return res.json({ profiles: sanitized, total: sanitized.length });
+});
+
+// 8. Like a Profile (Idempotent Matching)
+app.post('/api/v1/likes', (req: Request, res: Response) => {
+  const { targetUserId, isSuperLike, note } = req.body;
+  const currentUser = DB_USERS['user-chinwe'];
+  const targetUser = DB_USERS[targetUserId];
+
+  if (!targetUser) {
+    return res.status(404).json({ error: 'Target user not found' });
+  }
+
+  if (!currentUser.likesGiven.includes(targetUserId)) {
+    currentUser.likesGiven.push(targetUserId);
+  }
+
+  // Check if mutual match
+  const isMatch = targetUser.likesGiven.includes(currentUser.id);
+
+  if (isMatch) {
+    const conversationId = `match-${targetUser.name.toLowerCase()}`;
+    if (!DB_MESSAGES[conversationId]) {
+      DB_MESSAGES[conversationId] = [
+        {
+          id: `sys-${Date.now()}`,
+          conversationId,
+          senderId: targetUserId,
+          text: `Hi ${currentUser.name}! Glad we matched on WASSAA.`,
+          timestamp: 'Just now'
+        }
+      ];
+    }
+
+    return res.json({
+      success: true,
+      isMatch: true,
+      match: {
+        id: conversationId,
+        partner: {
+          id: targetUser.id,
+          name: targetUser.name,
+          age: targetUser.age,
+          professionTitle: targetUser.professionTitle,
+          city: targetUser.city,
+          photos: targetUser.photos
+        }
+      }
+    });
+  }
+
+  return res.json({ success: true, isMatch: false });
+});
+
+// 9. Pass a Profile
+app.post('/api/v1/passes', (req: Request, res: Response) => {
+  const { targetUserId } = req.body;
+  const currentUser = DB_USERS['user-chinwe'];
+  if (!currentUser.passesGiven.includes(targetUserId)) {
+    currentUser.passesGiven.push(targetUserId);
+  }
+  return res.json({ success: true });
+});
+
+// 10. Get Matches List
+app.get('/api/v1/matches', (req: Request, res: Response) => {
+  const currentUser = DB_USERS['user-chinwe'];
+  
+  // Find users who mutually liked
+  const matchedUsers = Object.values(DB_USERS).filter(
+    (u) => u.id !== currentUser.id && currentUser.likesGiven.includes(u.id) && u.likesGiven.includes(currentUser.id)
+  );
+
+  const result = matchedUsers.map((u) => {
+    const convId = `match-${u.name.toLowerCase()}`;
+    const msgs = DB_MESSAGES[convId] || [];
+    const lastMsg = msgs[msgs.length - 1];
+
+    return {
+      id: convId,
+      profile: {
+        id: u.id,
+        name: u.name,
+        age: u.age,
+        professionTitle: u.professionTitle,
+        city: u.city,
+        photos: u.photos,
+        verification: { status: u.verification.status }
+      },
+      lastMessage: lastMsg?.text || (lastMsg?.voiceNote ? 'Voice note' : 'You matched'),
+      lastMessageTime: lastMsg?.timestamp || 'Recently',
+      unreadCount: u.id === 'user-amara' ? 1 : 0,
+      isNew: u.id === 'user-amara'
+    };
+  });
+
+  return res.json({ matches: result });
+});
+
+// 11. Fetch Messages for a Match
+app.get('/api/v1/conversations/:matchId/messages', (req: Request, res: Response) => {
+  const { matchId } = req.params;
+  const messages = DB_MESSAGES[matchId] || [];
+  return res.json({ messages });
+});
+
+// 12. Send a Message
+app.post('/api/v1/conversations/:matchId/messages', (req: Request, res: Response) => {
+  const { matchId } = req.params;
+  const { text, voiceNote, mediaUrl, caption } = req.body;
+  const currentUser = DB_USERS['user-chinwe'];
+
+  if (!DB_MESSAGES[matchId]) {
+    DB_MESSAGES[matchId] = [];
+  }
+
+  const newMsg: StoredMessage = {
+    id: `msg-${Date.now()}`,
+    conversationId: matchId,
+    senderId: currentUser.id,
+    text,
+    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    voiceNote,
+    mediaUrl,
+    caption
+  };
+
+  DB_MESSAGES[matchId].push(newMsg);
+
+  // Return message plus simulated automated partner response
+  setTimeout(() => {
+    const partnerReply: StoredMessage = {
+      id: `reply-${Date.now()}`,
+      conversationId: matchId,
+      senderId: matchId.replace('match-', 'user-'),
+      text: "That's lovely! Looking forward to that. 😊",
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    DB_MESSAGES[matchId]?.push(partnerReply);
+  }, 1500);
+
+  return res.json({ success: true, message: newMsg });
+});
+
+// 13. Paystack Billing Checkout & Webhook Reconciliation
+app.post('/api/v1/billing/checkout', (req: Request, res: Response) => {
+  const { planId } = req.body;
+  const currentUser = DB_USERS['user-chinwe'];
+
+  const planPrices: Record<string, number> = {
+    free: 0,
+    premium: 150000, // ₦1,500 in minor kobo units
+    hyper_premium: 500000, // ₦5,000 in minor kobo units
+    verification_fee: 150000 // ₦1,500
+  };
+
+  const amountMinor = planPrices[planId] ?? 150000;
+  const reference = `pstk_ref_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+
+  // Record payment attempt
+  const paymentRecord: PaymentRecord = {
+    id: `pay_${Date.now()}`,
+    userId: currentUser.id,
+    reference,
+    amountMinor,
+    currency: 'NGN',
+    status: 'success', // Instantly reconciled in our sandbox adapter
+    planId,
+    verifiedAt: new Date().toISOString()
+  };
+  PAYMENTS_LEDGER.push(paymentRecord);
+
+  // Update Entitlement
+  if (planId === 'premium' || planId === 'hyper_premium') {
+    currentUser.tier = planId;
+  }
+
+  return res.json({
+    success: true,
+    reference,
+    amountNaira: amountMinor / 100,
+    status: 'success',
+    activeTier: currentUser.tier,
+    message: `Payment reconciled via Paystack adapter. ${planId} activated!`
+  });
+});
+
+// 14. Server-Authoritative Entitlements
+app.get('/api/v1/billing/entitlements', (req: Request, res: Response) => {
+  const currentUser = DB_USERS['user-chinwe'];
+  const limits = {
+    free: { dailyLikes: 30, canSeeLikes: false, privateIntroEnabled: false, incognitoEnabled: false },
+    premium: { dailyLikes: Infinity, canSeeLikes: true, privateIntroEnabled: false, incognitoEnabled: false },
+    hyper_premium: { dailyLikes: Infinity, canSeeLikes: true, privateIntroEnabled: true, incognitoEnabled: true }
+  }[currentUser.tier];
+
+  return res.json({
+    tier: currentUser.tier,
+    limits,
+    paymentsCount: PAYMENTS_LEDGER.length
+  });
+});
+
+// --- SERVE VITE IN DEV / DIST IN PROD ---
+async function startServer() {
+  if (process.env.NODE_ENV === 'production') {
+    // Production: serve built static files
+    const distPath = path.resolve(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req: Request, res: Response) => {
+      res.sendFile(path.resolve(distPath, 'index.html'));
+    });
+  } else {
+    // Development: mount Vite middlewares
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true }
+    });
+    app.use(vite.middlewares);
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[WASSAA Backend] Full-stack server running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer();

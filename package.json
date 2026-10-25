@@ -1,0 +1,15 @@
+{
+  "name": "wassaa",
+  "private": true,
+  "version": "1.0.0",
+  "description": "WASSAA - verified dating platform for Nigeria's uniformed and civilian professionals (PWA, Android, iOS).",
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:frontend": "npm --prefix frontend run build",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
+    "smoke": "node scripts/e2e-smoke.mjs",
+    "seed:db": "psql \"$SUPABASE_DB_URL\" -f backend/migrations/0001_init.sql",
+    "deploy:supabase": "node scripts/deploy-supabase.mjs"
+  }
+}

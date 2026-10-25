@@ -1,0 +1,6 @@
+{
+  "name": "Salute - Uniformed & Military Dating",
+  "description": "WASSAA - The warm, verified matchmaking and dating platform designed for professionals and real people across Nigeria with dignity and privacy defaults.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
