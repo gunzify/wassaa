@@ -389,7 +389,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
                 : 'border-[#E8E4DC] bg-white hover:border-[#B85A3C]/30'
             }`}
           >
-            <span className="block text-[15px] font-semibold text-[#1A1816]">{label}</span>
+            <span className="block text-[0.9375rem] font-semibold text-[#1A1816]">{label}</span>
             <span className="block text-xs text-[#6B665F] mt-0.5">{desc}</span>
             {datingGoal === value && (
               <div className="absolute right-4 top-1/2 -translate-y-1/2">
@@ -481,7 +481,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
                     <Trash2 className="w-3 h-3" />
                   </button>
                   {idx === 0 && (
-                    <span className="absolute bottom-1.5 left-1.5 px-2 py-0.5 rounded-md bg-white/90 text-[10px] font-semibold text-[#1A1816]">
+                    <span className="absolute bottom-1.5 left-1.5 px-2 py-0.5 rounded-md bg-white/90 text-[0.75rem] font-semibold text-[#1A1816]">
                       Main
                     </span>
                   )}
@@ -492,7 +492,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
                   className="w-full h-full bg-white border-2 border-dashed border-[#E8E4DC] rounded-xl flex flex-col items-center justify-center gap-1.5 text-[#9C958D] hover:border-[#B85A3C]/40 hover:text-[#B85A3C] transition-colors"
                 >
                   {idx === 0 ? <Camera className="w-5 h-5" /> : <Plus className="w-5 h-5" />}
-                  <span className="text-[10px] font-medium">{idx === 0 ? 'Add photo' : ''}</span>
+                  <span className="text-[0.75rem] font-medium">{idx === 0 ? 'Add photo' : ''}</span>
                 </button>
               )}
             </div>
@@ -803,7 +803,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
             <div key={p.id} className="mb-3 p-4 bg-white border border-[#E8E4DC] rounded-xl">
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <p className="text-[11px] font-semibold text-[#9C958D] uppercase tracking-wider mb-1">{p.question}</p>
+                  <p className="text-[0.8125rem] font-semibold text-[#9C958D] uppercase tracking-wider mb-1">{p.question}</p>
                   <p className="text-sm text-[#1A1816]">{p.answer}</p>
                 </div>
                 <button onClick={() => removePrompt(p.id)} className="p-1 text-[#9C958D] hover:text-[#9B2C2C] transition-colors shrink-0">
@@ -831,7 +831,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
                 </div>
               ) : (
                 <div>
-                  <p className="text-[11px] font-semibold text-[#B85A3C] uppercase tracking-wider mb-2">{activePromptQuestion}</p>
+                  <p className="text-[0.8125rem] font-semibold text-[#B85A3C] uppercase tracking-wider mb-2">{activePromptQuestion}</p>
                   <textarea
                     value={activePromptAnswer}
                     onChange={(e) => { if (e.target.value.length <= 200) setActivePromptAnswer(e.target.value); }}
@@ -941,13 +941,13 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
   };
 
   return (
-    <div className="w-full min-h-screen bg-[#F7F5F0] flex flex-col">
+    <div className="w-full flex flex-col min-h-[calc(100dvh-2.5rem)]">
       <header className="sticky top-0 z-30 bg-[#F7F5F0]/95 backdrop-blur-sm px-4 pt-4 pb-3">
         <div className="max-w-[480px] mx-auto flex items-center justify-between">
           <button type="button" onClick={goBack} disabled={step === 1} aria-label={step === 1 ? 'You are at the first onboarding step' : 'Go back'} className="p-2 -ml-2 text-[#6B665F] hover:text-[#1A1816] disabled:opacity-30 disabled:cursor-not-allowed rounded-lg hover:bg-white/60">
             <ChevronLeft className="w-5 h-5" />
           </button>
-          <span className="font-['Space_Mono',monospace] text-[11px] uppercase tracking-widest text-[#9C958D]">{step} / {STEP_COUNT}</span>
+          <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-widest text-[#9C958D]">{step} / {STEP_COUNT}</span>
           <span className="w-9" aria-hidden="true" />
         </div>
         <div className="max-w-[480px] mx-auto mt-3 h-1 bg-[#E8E4DC] rounded-full overflow-hidden">

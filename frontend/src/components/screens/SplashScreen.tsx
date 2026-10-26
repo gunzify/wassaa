@@ -43,26 +43,14 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
         </div>
 
         <div className="flex flex-col gap-3">
-          <button
-            type="button"
-            onClick={onCreateAccount}
-            className="w-full py-3.5 px-6 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] active:scale-[0.99] text-white font-semibold text-sm sm:text-base tracking-wide transition-all shadow-[0_4px_16px_-2px_rgba(0,0,0,0.35)] cursor-pointer text-center"
-          >
+          <button type="button" onClick={onCreateAccount} className="btn btn-primary btn-block">
             Get Started
           </button>
 
-          <button
-            type="button"
-            onClick={onLogIn}
-            className="w-full py-3.5 px-6 rounded-full bg-white/5 hover:bg-white/12 active:scale-[0.99] text-white font-medium text-sm sm:text-base transition-all border border-white/60 backdrop-blur-xs cursor-pointer text-center"
-          >
+          <button type="button" onClick={onLogIn} className="btn btn-quiet btn-block">
             Sign In
           </button>
         </div>
-
-        <p className="text-[11px] sm:text-xs text-white/55 text-center font-normal leading-relaxed">
-          Every account is verified by email. Adding a phone number is optional.
-        </p>
       </div>
     </div>
   );

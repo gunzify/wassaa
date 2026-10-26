@@ -96,7 +96,7 @@ export const IdentityVerificationScreen: React.FC<IdentityVerificationScreenProp
   };
 
   return (
-    <div className="w-full min-h-screen py-8 sm:py-12 px-4 sm:px-6 flex items-center justify-center bg-[#F7F5F0]">
+    <div className="w-full screen-center">
       <div className="w-full max-w-xl bg-white rounded-2xl border border-[#E8E4DC] p-6 sm:p-8 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] flex flex-col justify-between">
         <div>
           {/* Header navigation */}
@@ -109,7 +109,7 @@ export const IdentityVerificationScreen: React.FC<IdentityVerificationScreenProp
               <ChevronLeft className="w-4 h-4" />
               <span>Back</span>
             </button>
-            <span className="font-['Space_Mono',monospace] text-[11px] uppercase tracking-wider text-[#9C958D]">
+            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#9C958D]">
               Verification
             </span>
           </div>
@@ -189,7 +189,7 @@ export const IdentityVerificationScreen: React.FC<IdentityVerificationScreenProp
           <div className="p-4 bg-[#F7F5F0] border border-[#E8E4DC] rounded-xl mb-4 text-xs">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-xs font-semibold text-[#1A1816]">Verification Status</span>
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#B85A3C] bg-[#F5EAE5] px-2.5 py-0.5 rounded-full border border-[#E8D5CD]">
+              <span className="inline-flex items-center gap-1 text-[0.8125rem] font-semibold text-[#B85A3C] bg-[#F5EAE5] px-2.5 py-0.5 rounded-full border border-[#E8D5CD]">
                 <Clock className="w-3 h-3" />
                 <span>Pending submission</span>
               </span>
@@ -228,7 +228,7 @@ export const IdentityVerificationScreen: React.FC<IdentityVerificationScreenProp
       {/* Modal: ID Upload */}
       {activeModal === 'id' && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-6 sm:p-8 border border-[#E8E4DC] shadow-[0_8px_32px_-4px_rgba(0,0,0,0.12)] max-w-lg w-full max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-2xl p-6 sm:p-8 border border-[#E8E4DC] shadow-[0_8px_32px_-4px_rgba(0,0,0,0.12)] max-w-lg w-full max-h-[90dvh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#E8E4DC]">
               <h3 className="font-['Cormorant_Garamond',serif] text-2xl font-semibold text-[#1A1816]">
                 Upload Government ID

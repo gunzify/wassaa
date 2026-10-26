@@ -29,6 +29,7 @@ React + Vite PWA (frontend/)
 - Supabase project: `wassaa-dating`, ref `avlbsficfejvwokxkgyl`, region `eu-west-1` (West EU / Ireland).
 - Migrations `20261024000000`–`20261024000007` are all recorded as applied on the remote. `00007` (`matching_realtime`) was verified present in the live database from this workspace on 2026-10-25: `supabase migration list` shows all eight local/remote pairs matching, and a `supabase db dump` confirmed the `location_lat`/`location_lng` columns and constraint, the nine-parameter `wassaa_discovery`, the `wassaa_chat_message_broadcast` trigger, `wassaa_can_access_match_topic`, and the `realtime.messages` policy "Wassaa match members can receive chat broadcasts".
 - The `api` Edge Function was redeployed from this workspace on 2026-10-25 (after the discovery radius guard in §16). `GET /functions/v1/api/health` returns 200 through the fixed `/functions/v1/api/...` path parser, confirming the path normalizer fix is live — this resolves the 2026-10-24 incident where member calls to `/functions/v1/api/auth/session` returned 404 because the handler's path parser was not stripping Supabase's `/api/...` function-prefixed path. A full authenticated two-account smoke run passed (48/48, §13). `send-sms` deployment remains unconfirmed.
+- **Hosting (2026-10-26):** the PWA is live on Vercel at `https://wassaa.vercel.app`. Testers reported "failed to fetch" on image uploads there while localhost worked; root cause was the R2 bucket CORS rules not listing the Vercel origin (Edge API CORS already allowed it). Both buckets were updated from `backend/r2-cors.json` on 2026-10-26 and verified with `wrangler r2 bucket cors list` (§8).
 - Auth model (2026-10-24): email OTP or Google is required and sufficient; phone verification is optional. The hosted email provider is enabled and the exact `verify { type: 'email' }` call was exercised with an admin-generated code (session issued, email confirmed) without sending mail. The default Magic Link template still needs `{{ .Token }}` for the six-digit code to appear; the link works meanwhile.
 - **Phone auth is disabled** (`external.phone: false`); phone verification is optional and not required for signup, profile creation, or app access. It is only an optional `phone_change` step in Settings and depends on Termii/SMS hook delivery being available. The owner reports Google sign-in is working; the current workspace cannot independently confirm production OAuth settings. `wassaa_admin_users` was empty in the last inspected state, so every `/admin/*` call returns 403 until an admin is provisioned.
 - Live database verification (2026-10-24): 13 tables, RLS on every table, 8 RPCs and the auth→profile trigger present and correct; the trigger was exercised with a real Auth user and the account removed. R2 is **configured and live-verified** on the hosted `api` function as of 2026-10-25 (secrets uploaded, presign → signed PUT → public URL → cleanup all 200/204 in the smoke run). Paystack still cannot be described as live until its secret is uploaded and real staging transactions succeed. See `docs/PRODUCTION-AUDIT.md`.
@@ -50,7 +51,7 @@ React + Vite PWA (frontend/)
 | `frontend/src/services/supabase-auth.ts` | Direct Supabase Auth REST calls, refresh-token lifecycle, Google ID-token exchange, email OTP, optional phone-change verification, magic-link fragment pickup, and local session storage. |
 | `frontend/src/services/media.ts` | Browser-side image resizing/encoding before upload. |
 | `frontend/src/types/index.ts` | UI/domain contracts for profiles, privacy, preferences, messages, matches, and tiers. |
-| `frontend/src/design-tokens.ts` | Palette, spacing, radii, shadows, and typography scale. |
+| `frontend/src/index.css` | The design system: palette CSS variables, type scale, component kit (`.btn`, `.card`, `.field`, `.dock`, …), and interaction rules. (Former `design-tokens.ts` was imported by no code and was removed 2026-10-26.) |
 | `frontend/src/assets/branding.ts` | Brand metadata and primary image imports. |
 | `frontend/public/admin/` | Active static integrity console; copied unchanged into the Vite build at `/admin/`. Uses Google + Supabase Auth and server-side admin allowlisting. |
 | `frontend/public/sw.js`, `manifest.webmanifest`, `icons/` | PWA installation and app-shell-only offline cache. |
@@ -81,7 +82,7 @@ Two components under `frontend/src/components/common/` (`FilterModal.tsx`, `Back
 
 ### Design system
 
-The visual language is **Warm Terracotta & Editorial**: restrained editorial typography, warm paper-like backgrounds, high contrast ink, and a limited terracotta action color. Tokens are declared in `frontend/src/design-tokens.ts`; components also use Tailwind arbitrary values matching those tokens, so token edits may require updating component classes too.
+The visual language is **Warm Terracotta & Editorial**: restrained editorial typography, warm paper-like backgrounds, high contrast ink, and a limited terracotta action color. The canonical implementation is the component kit in `frontend/src/index.css` (`@layer components`): `.btn`/`.btn-primary`/`.btn-secondary`/`.btn-quiet`/`.btn-danger`/`.btn-block`, `.card`, `.field`, `.pill`, `.sheet`/`.sheet-backdrop`/`.modal-title`, `.row`/`.row-icon`/`.row-title`/`.row-sub`, and `.dock`/`.dock-item`/`.dock-label`. Screens should compose these classes instead of inventing one-off button or modal styles; components still use Tailwind arbitrary values matching the palette below.
 
 | Role | Value | Usage |
 |---|---|---|
@@ -96,11 +97,13 @@ The visual language is **Warm Terracotta & Editorial**: restrained editorial typ
 | Verified | `#2C6B56` | General verification badge/success |
 | Danger | `#9B2C2C` | Destructive/safety actions |
 
-Typography: Cormorant Garamond for display/editorial headings, Plus Jakarta Sans for UI/body, and Space Mono for labels/metadata. Fonts are fetched from Google Fonts in `frontend/index.html`; they are not bundled. Spacing is a 4px scale; radii run from 8px to 24px with pill actions; cards use light shadows. The main content column is capped around 480px and designed mobile-first.
+Typography: Cormorant Garamond for display/editorial headings, Plus Jakarta Sans for UI/body, and Space Mono for labels/metadata. Fonts are fetched from Google Fonts in `frontend/index.html`; they are not bundled. The HTML root font size is fixed at 16px (no viewport-based clamp), so every device renders the rem scale identically. Spacing is a 4px scale; radii run from 8px to 24px with pill actions; cards use light shadows. The main content column is capped around 480px and designed mobile-first.
+
+Interaction rules (enforced in unlayered CSS in `index.css`, so they beat Tailwind's utility layer): every `button`/`[role="button"]` gets a 44px min-width/min-height floor (40px with `data-compact`), and all buttons/links carry a `scale` transition so `transition-colors` utilities on a screen cannot strip press feedback. The dock is opaque (no `backdrop-filter`), items are ~68px tall with 28px icons, and `index.html` sets `viewport-fit=cover` so `env(safe-area-inset-bottom)` lifts it above the home indicator.
 
 ### Shell and navigation
 
-`App.tsx` uses a string-valued local `currentScreen` state, not a URL router. The four-item fixed bottom dock is Discover, Matches, Messages, and Profile; it respects the device safe-area inset. There is a centered narrow shell for most screens, full-bleed splash/match celebration, and a simple top toast host. Session restoration happens during app boot. The application is a PWA, not a native Android/iOS application.
+`App.tsx` uses a string-valued local `currentScreen` state, not a URL router. The four-item fixed bottom dock is Discover, Matches, Messages, and Profile; it respects the device safe-area inset. Profile and Settings are separate screens: the Profile header's gear button opens `settings` (same component rendered with `view="settings"`), whose back button returns to `settings_privacy`; the dock's Profile tab stays active for both. The Messages tab has its own `messages` screen (the conversation list, `MatchesListScreen` with `variant="messages"`) and lights up for both `messages` and `chat`, so it never silently redirects to Matches. There is a centered narrow shell for most screens, full-bleed splash/match celebration, and a simple top toast host. Session restoration happens during app boot. The application is a PWA, not a native Android/iOS application.
 
 Current shell screens and flows:
 
@@ -109,7 +112,7 @@ Current shell screens and flows:
 | `SplashScreen` | Brand introduction; create account / login entry. |
 | `SignUpScreen` | Entry for email auth and Google Identity Services. Either path confirms the account; no phone number is required. |
 | `EmailVerificationScreen` | Email entry, six-digit code request/entry, resend cooldown, and Supabase `verify` with `type: 'email'`. Also covers sign-in for existing accounts. |
-| `PhoneVerificationScreen` | Optional, skippable. Nigeria `+234` phone input, OTP request, six-digit keypad/entry, resend cooldown, and verification through Supabase phone-change semantics. Reached from Profile & Settings. |
+| `PhoneVerificationScreen` | Optional, skippable. Nigeria `+234` phone input, OTP request, six-digit keypad/entry, resend cooldown, and verification through Supabase phone-change semantics. Reached from Settings (trust & privacy), returns there. |
 | `ProfessionSelectionScreen` | Search/select a profession category; uniformed categories proceed to service selection. |
 | `ServiceSelectionScreen` | Select a uniformed-service branch; this is self-reported data. |
 | `ProfileSetupScreen` | Initial profile details and photo setup before the identity review screen. |
@@ -118,9 +121,9 @@ Current shell screens and flows:
 | `DiscoverScreen` | Card/photo browsing, pass, like, super-like, profile detail, filters, and deck refresh. Swipes are server-authoritative. |
 | `ProfileDetailScreen` | Expanded candidate profile and swipe actions. |
 | `MatchCelebrationScreen` | Shown after the server reports a mutual like; starts chat or returns to discovery. |
-| `MatchesListScreen` | Matches and received likes tabs. Received likes are gated to paid tiers. |
+| `MatchesListScreen` | Two renderings: `variant="matches"` (Matches tab: matches + received-likes inner tabs) and `variant="messages"` (Messages tab: conversations list with last-message preview and its own empty state). Received likes are gated to paid tiers. |
 | `ChatScreen` | Text/photo exchange, profile view, block/report menu, and image preview. Photos are private R2 objects delivered with short-lived signed URLs. There is no active voice recording/send API. |
-| `SettingsPrivacyScreen` | Profile and privacy controls, optional phone verification, blocked users, account actions, sign-out, and upgrade entry. |
+| `SettingsPrivacyScreen` | Renders one of two views via the `view` prop: `profile` (identity card, photos, about you; header has preview + gear buttons) or `settings` (membership, discovery preferences, trust & privacy, account actions; header has a back button). Optional phone verification, blocked users, sign-out, delete account, and upgrade entry live in the settings view. |
 | `SubscriptionPlansScreen` | Displays Free, Premium, and Hyper Premium tiers and starts checkout. |
 
 Some onboarding/profile models contain richer optional fields (prompts, habits, family/values, relocation) than the active database/API persists. Check both the `WassaaApi` request serializer and Edge API before adding a UI field: type presence alone does not mean it is stored.
@@ -140,7 +143,7 @@ Some onboarding/profile models contain richer optional fields (prompts, habits, 
 7. Photo files are resized by `preparePhoto()` (max edge 1600px; target <=650 KiB, JPEG) before being uploaded directly to R2. Client does not send photo bytes through the Edge API.
 8. Paystack checkout opens a popup synchronously from the click to avoid popup blockers, then polls the server-side activation endpoint up to 40 times at 3-second intervals while the webhook processes payment. If popup is blocked, it redirects the current tab.
 
-The four-tab `Messages` action opens the Chat screen; actual conversation context still depends on selecting a match first. Do not assume a separate inbox route exists in the URL system.
+The dock's `Messages` tab opens the `messages` conversation list (not Chat directly); selecting a conversation opens `chat`, and chat's back button returns to `chatOrigin` (`messages`, `matches_list`, or `discover` depending on where it was opened). The `matches_list` refresh effect also covers `messages`.
 
 ## 4. Frontend service contracts
 
@@ -274,7 +277,7 @@ Configured account layout (names/domains are identifiers, not credentials):
 - Private bucket `wassaa`: identity documents/selfies and private chat images.
 - Public bucket `wassaa-public`: profile photos only.
 - Public development domain is configured for the profile bucket. Prefer a custom domain for production; `r2.dev` is a development/testing URL.
-- Browser CORS file: `backend/r2-cors.json`, currently allows GET/PUT/HEAD with `content-type` and development plus `https://wassaa.app` origins. Keep it aligned with the actual deployed origin.
+- Browser CORS file: `backend/r2-cors.json` allows GET/PUT/HEAD with `content-type` from `http://localhost:5173`, `http://localhost:3000`, `http://localhost:4173`, `https://wassaa.app`, and `https://wassaa.vercel.app`. The file is the source of truth; apply it to **both** buckets with `npx wrangler r2 bucket cors set <bucket> --file backend/r2-cors.json` and confirm with `cors list`. The Vercel origin was added on 2026-10-26 after testers got "failed to fetch" on uploads from `wassaa.vercel.app` (bucket rules lacked the origin while Edge API CORS already allowed it); the Edge API allow-list itself never needed a change for Vercel (see §12). Keep the file aligned with the actual deployed origins.
 
 Object key namespaces: `photos/<profile-id>/<uuid>.<ext>`, `chat/<profile-id>/<uuid>.<ext>`, `verification/<profile-id>/<uuid>.<ext>`. Accepted content types are JPEG, PNG, WebP. Presigned PUT lasts 300 seconds. Profile photos are persisted as public URLs; chat and verification media are persisted as object keys. Chat reads only return a signed GET after checking the match membership and that the key belongs to one participant. Admin review receives signed GETs to verification media.
 
@@ -357,7 +360,8 @@ Hosted Edge secrets are separate from local `.env`; adding a value locally does 
 **Hosted secret inventory (inspected 2026-10-25 via `supabase secrets list`, values are returned as hashes only):**
 
 - Present: `R2_ACCOUNT_ID`, `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PRIVATE_BUCKET`, `R2_PUBLIC_BUCKET`, `R2_PUBLIC_BASE_URL` (uploaded 2026-10-25), `TERMII_API_KEY`, `TERMII_SENDER_ID`, and the Supabase-managed `SUPABASE_*` keys.
-- **Missing:** `GOOGLE_CLIENT_ID` (the `/public-config` response therefore returns an empty client ID; the app relies on `VITE_GOOGLE_CLIENT_ID`), `PAYSTACK_SECRET_KEY`, `PAYSTACK_CALLBACK_URL` (billing endpoints return "Payments are not configured"), `APP_ORIGINS` (the function falls back to its built-in default origins: `https://wassaa.app` + localhost), `TERMII_BASE_URL`.
+- **Missing:** `GOOGLE_CLIENT_ID` (the `/public-config` response therefore returns an empty client ID; the app relies on `VITE_GOOGLE_CLIENT_ID`), `PAYSTACK_SECRET_KEY`, `PAYSTACK_CALLBACK_URL` (billing endpoints return "Payments are not configured"), `TERMII_BASE_URL`.
+- **`APP_ORIGINS` — superseded by request probes (2026-10-26):** the 2026-10-25 inventory listed it as missing, but live probes of the deployed `api` function show `https://wassaa.vercel.app` being echoed as `Access-Control-Allow-Origin` (200) while an unknown origin gets 403 + fallback to `https://wassaa.app` — i.e. the effective allow-list includes Vercel, so the secret is set hosted (or the deployed code was updated to include it). The inventory itself could not be re-read: `supabase secrets list` from this workspace returned 403 (insufficient privileges) on 2026-10-26; re-login with an Owner/Administrator session before the next secrets change. Verify by probing, not by assumption.
 - **Typo found:** a secret named `SEND_SMS_HOOK_SECRE` (missing final `T`, set 2026-10-24) exists. The code expects `SEND_SMS_HOOK_SECRET`, so SMS hook auth will fail until the typo'd secret is deleted and the correct name is set. Do this before enabling phone verification.
 
 **Never store secrets in this file.** Termii and R2 keys exposed in chat were detected as reused in the local env at last check and must be rotated at the providers. Rotate any exposed Cloudflare account token and Google OAuth client secret as well. Do not re-use the leaked values. Use separate dev/staging/production credentials.
@@ -375,6 +379,8 @@ npm run dev:frontend
 ```
 
 The frontend Vite server defaults to `http://localhost:5173`. It will call the configured Supabase project because active auth/API use `frontend/.env`; no local Supabase stack is required for that path. To run the legacy backend separately, use `npm run dev:backend`; that is not the active PWA backend. Root scripts: `npm run typecheck`, `npm run build:frontend`, and `npm run deploy:supabase -- --credentials-rotated`.
+
+**Vercel frontend deploy:** run `vercel --prod` **from `frontend/`**, not the repo root. Both `.vercel/project.json` links point at the same `wassaa` project, but the Vite build config (`buildCommand`, output `dist`, rewrites, headers) lives in `frontend/vercel.json`, and the root `package.json` has no `build` script — running `vercel` from the root uploads the whole repo and fails the remote build with `Missing script: "build"` (observed 2026-10-26). Local CLI deploys upload the working tree as a snapshot, so an uncommitted tree still deploys; push to git separately if it should also be in history. After deploying, confirm the live HTML references the fresh `assets/index-*.js` hash and remember the service worker caches the shell — testers need a hard refresh.
 
 ### Database and Edge deployment
 
@@ -408,7 +414,7 @@ These are implementation gaps, not hidden features:
 - **Monetization:** paid tiers are one-time prices in the active API. No subscriptions/expiry/renewals/refunds; no boosts or consumables; several returned entitlement flags are not wired into product behavior.
 - **Operations:** no confirmed monitoring/alerts, backups/restore drill, incident runbook, support staffing, abuse staffing, production load test, or concurrency estimate.
 - **Client/UX:** mandatory onboarding routing/back behavior and persisted drafts are implemented in source. No React Router/deep-link route table; some component files are not wired. Full accessibility, visual, cross-browser/mobile and device-location QA remain.
-- **Infrastructure:** the PWA static host and production origin are not established by repository code. R2 CORS and Google OAuth origins must match the actual final domains.
+- **Infrastructure:** the PWA is hosted on Vercel at `https://wassaa.vercel.app` (hosting lives in the Vercel dashboard, not in repository code; `https://wassaa.app` remains in the API/R2 allow-lists as the intended production origin). R2 bucket CORS was updated to include the Vercel origin on 2026-10-26 (§8) after tester upload failures. Google OAuth origins must match the final domains — confirm the Vercel domain is added to the Google Cloud OAuth authorized origins before relying on Google sign-in there.
 
 The older `docs/IMPLEMENTATION-PLAN.md`, `docs/MONETIZATION-ECONOMY.md`, and parts of `README.md` include planned or legacy content (monthly subscriptions, verification charges, boost/consumable products, voice notes, Express API as primary, native apps, PostGIS, future features). These are **not authoritative implemented behavior** where they conflict with active code and this KB. In particular, `frontend/src/data/monetizationData.ts` is a PRD/proposal artifact and its plan period/features are not the server catalog. Check active Edge API and SQL migrations for actual behavior.
 
@@ -459,3 +465,32 @@ The older `docs/IMPLEMENTATION-PLAN.md`, `docs/MONETIZATION-ECONOMY.md`, and par
 - R2 hosted secrets were uploaded on 2026-10-25 with `node scripts/set-r2-secrets.mjs` after `npx supabase login` (Owner role required — see §8/§12) and the `api` function was redeployed. Use the same script after rotating R2 credentials; use `node scripts/r2-check.mjs` to validate `backend/.env` values directly against R2 without touching the cloud.
 - The radius guard: `/discovery` only forwards `radiusKm` to the RPC when the member has coordinates and the stored radius is finite and ≥ 5 (defends against `Number(null) === 0`, which would have produced an empty deck for members without location). Enforced in the API layer, so no follow-up migration was created.
 - Still unverified: browser/device UI run and geolocation permission prompts, email OTP and Google sign-in UI flows (note: `GOOGLE_CLIENT_ID` is not a hosted secret yet, §12), Paystack test webhook/transactions (secrets not hosted), `send-sms` (and the `SEND_SMS_HOOK_SECRE` typo, §12), admin console, moderation flows, and load testing. R2 media upload/download is verified (48/48 smoke run).
+
+## 17. Design overhaul and navigation restructure (2026-10-26)
+
+Everything below is verified in the browser against the local dev server with a QA account and passes typecheck + production build.
+
+### Profile / Settings split and dock rework
+
+- `SettingsPrivacyScreen` gained `view: 'profile' | 'settings'`, `onOpenSettings`, `onBackToProfile`. Profile view: header (preview + gear buttons), identity card, photos, about you. Settings view: back button header, membership card, discovery, trust & privacy, account. Both are rendered from `App.tsx` (`settings_privacy` and `settings` ScreenIds); `settings` is in `showTabs` and maps to the Profile dock tab.
+- New ScreenId `messages`: `MatchesListScreen` renders `variant="messages"` (own header, conversation list, "No messages yet" empty state with a Discover CTA). The old bug — clicking Messages with no active match redirected to `matches_list`, lighting up the **Matches** tab so Messages looked dead — is gone; the dock handler is a plain `setCurrentScreen(id)` again.
+- Chat tracks `chatOrigin` so Back returns to `messages`, `matches_list`, or `discover` depending on where the conversation was opened. Phone verification now enters/returns to `settings`.
+- Dock: 28px icons (`w-7 h-7`), ~68px item height, 13px labels, opaque surface (no `backdrop-filter`), 12px + safe-area bottom padding.
+
+### System CSS (frontend/src/index.css)
+
+- Root font size fixed at 16px (removed the `clamp(16px, 4.25vw, 18px)` viewport scaling that made devices disagree).
+- Unlayered press-calibration rule: `button, [role="button"], a[href]` always transition `scale` (140ms) — beats the utilities layer, so per-screen `transition-colors` can no longer drop press feedback. Verified in-browser: a `transition-colors` button computes `transitionProperty: "scale, background-color, ..."`.
+- Tap floors: 44px min-width/min-height, 40px with `data-compact` (also floors the inline-styled icon buttons).
+- `.row-icon` is now a plain muted inline icon — the tinted icon-tile boxes that made every Profile row bulky are gone (per-row `bg-[...] text-[...]` overrides removed in TSX).
+- New `.modal-title` class; all ten modals in `SettingsPrivacyScreen` use it plus the `.btn` kit (their ad-hoc `rounded-full bg-[#B85A3C] text-xs font-bold` one-offs were replaced).
+
+### AI-slop / consistency sweep
+
+- `frontend/index.html` sets `viewport-fit=cover` so `env(safe-area-inset-*)` is real on notched phones (dock/text were sitting under the home indicator before).
+- BlockReportModal + FilterModal: off-palette hexes (`#C25E68`, `#232725`, `#646A67`, `#E5E0D8`, `#F8F5F0`) → brand values; unloaded Fraunces → Cormorant Garamond; `⌛` spinners → `Loader2`; `vh` → `dvh`.
+- Dating-goal emoji options (💍❤️✨🌿) → lucide `Gem`/`Heart`/`Target`/`Compass` with keyboard-accessible `role="button"` rows; membership `Sparkles` → `Star`; MatchCelebration gradient blob removed; `WassaaLogo` 9/10px text bumped; "Profile activated! Your match queue is ready" → "You're all set — fresh profiles land in Discover."; dead `BackendLiveConsole.tsx` deleted; lightbox/photo triggers got `role="button"`; `vh` → `dvh` across Chat/Identity/Settings lightbox.
+
+### QA fixtures
+
+- `scripts/qa-design-user.mjs` gained `--seed` (three male Lagos deck profiles, `qa-design-deck*` prefix) so Discover renders real cards; `--cleanup` still removes every `qa-design-*` user and profile. Reviewer deck verified at 3 cards.

@@ -26,9 +26,7 @@ export const MatchCelebrationScreen: React.FC<MatchCelebrationScreenProps> = ({
   }, []);
 
   return (
-    <div className="relative w-full max-w-xl mx-auto min-h-[620px] flex-1 bg-[#1A1816] text-[#F7F5F0] rounded-3xl flex flex-col justify-between p-6 md:p-10 select-none border border-[#2E2824] shadow-[0_8px_32px_-4px_rgba(0,0,0,0.3)] overflow-hidden font-['Plus_Jakarta_Sans',sans-serif]">
-      {/* Warm ambient radial glow */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-80 h-80 bg-gradient-to-tr from-[#B85A3C]/20 to-[#2A3A2C]/20 rounded-full blur-3xl pointer-events-none" />
+    <div className="relative w-full max-w-[30rem] mx-auto min-h-[26rem] flex-1 bg-[#1A1816] text-[#F7F5F0] flex flex-col justify-between px-5 py-6 select-none overflow-hidden font-['Plus_Jakarta_Sans',sans-serif]">
 
       {/* Spacer for top balance */}
       <div className="h-4" />

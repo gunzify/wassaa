@@ -91,7 +91,9 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({ onCreden
         size: 'large',
         shape: 'pill',
         text: 'continue_with',
-        width: Math.min(360, Math.max(240, Math.floor(hostRef.current.clientWidth))),
+        // Google adds its own border/scaling on top of the requested width, so
+        // leave room for it or the pill spills past the card edge.
+        width: Math.min(360, Math.max(220, Math.floor(hostRef.current.clientWidth) - 12)),
         logo_alignment: 'left'
       });
       setLoading(false);
@@ -107,7 +109,7 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({ onCreden
   if (!clientId) return null;
 
   return (
-    <div className="relative w-full min-h-11 flex justify-center" aria-busy={loading || disabled}>
+    <div className="relative w-full min-h-[3.25rem] flex justify-center overflow-hidden rounded-full" aria-busy={loading || disabled}>
       <div ref={hostRef} className={`w-full flex justify-center ${disabled ? 'pointer-events-none opacity-60' : ''}`} />
       {loading && <div className="absolute inset-0 rounded-full border border-[#E8E4DC] bg-white animate-pulse" aria-hidden="true" />}
     </div>

@@ -29,7 +29,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({
   };
 
   return (
-    <div className="w-full min-h-screen py-8 sm:py-12 px-4 sm:px-6 flex items-center justify-center bg-[#F7F5F0]">
+    <div className="w-full screen-center">
       <div className="w-full max-w-xl bg-white rounded-2xl border border-[#E8E4DC] p-6 sm:p-8 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] flex flex-col justify-between">
         <div>
           {/* Header navigation */}
@@ -42,7 +42,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({
               <ChevronLeft className="w-4 h-4" />
               <span>Back</span>
             </button>
-            <span className="font-['Space_Mono',monospace] text-[11px] uppercase tracking-wider text-[#9C958D]">
+            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#9C958D]">
               Step 4 of 4
             </span>
           </div>
@@ -96,7 +96,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({
                 <label className="text-xs font-semibold text-[#1A1816] font-['Plus_Jakarta_Sans',sans-serif]">
                   Bio
                 </label>
-                <span className="font-['Space_Mono',monospace] text-[11px] text-[#9C958D]">
+                <span className="font-['Space_Mono',monospace] text-[0.8125rem] text-[#9C958D]">
                   {bio.length}/150
                 </span>
               </div>

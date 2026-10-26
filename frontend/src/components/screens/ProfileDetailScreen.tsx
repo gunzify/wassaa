@@ -41,7 +41,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
   const prompts = profile.prompts || [];
 
   return (
-    <div className="w-full min-h-screen bg-[#F7F5F0] text-[#1A1816] font-['Plus_Jakarta_Sans',sans-serif] relative pb-32">
+    <div className="w-full text-[#1A1816] font-['Plus_Jakarta_Sans',sans-serif] relative pb-2">
       {/* Top Floating Editorial Header */}
       <div className="sticky top-0 z-30 bg-[#F7F5F0]/90 backdrop-blur-md border-b border-[#E8E4DC] px-4 py-3">
         <div className="max-w-2xl mx-auto flex items-center">
@@ -54,7 +54,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
           </button>
 
           <div className="text-center flex-1">
-            <span className="font-['Space_Mono',monospace] text-[11px] font-semibold tracking-widest text-[#6B665F] uppercase block">
+            <span className="font-['Space_Mono',monospace] text-[0.8125rem] font-semibold tracking-widest text-[#6B665F] uppercase block">
               Lookbook
             </span>
             <span className="font-['Cormorant_Garamond',serif] text-base font-semibold text-[#1A1816]">
@@ -86,7 +86,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
                   {profile.name}{profile.age ? `, ${profile.age}` : ''}
                 </h1>
                 {profile.verification?.status === 'verified' && (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#FFFFFF]/90 backdrop-blur-md text-[#2C6B56] text-[11px] font-semibold border border-[#2C6B56]/30 font-['Space_Mono',monospace] tracking-wider uppercase shadow-xs">
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#FFFFFF]/90 backdrop-blur-md text-[#2C6B56] text-[0.8125rem] font-semibold border border-[#2C6B56]/30 font-['Space_Mono',monospace] tracking-wider uppercase shadow-xs">
                     <ShieldCheck className="w-3.5 h-3.5 stroke-[2.5]" />
                     Verified
                   </span>
@@ -107,11 +107,11 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
         {/* PROFILE ESSENTIALS CARD */}
         <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-5 sm:p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-[#E8E4DC]">
-            <span className="font-['Space_Mono',monospace] text-[11px] uppercase tracking-wider text-[#6B665F]">
+            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#6B665F]">
               Profile Essentials
             </span>
             {profile.distanceKm !== undefined && (
-              <span className="font-['Space_Mono',monospace] text-[11px] text-[#6B665F] uppercase">
+              <span className="font-['Space_Mono',monospace] text-[0.8125rem] text-[#6B665F] uppercase">
                 {profile.distanceKm} km away
               </span>
             )}
@@ -152,7 +152,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
 
           {profile.intentions && profile.intentions.length > 0 && (
             <div className="pt-3 border-t border-[#E8E4DC]">
-              <span className="font-['Space_Mono',monospace] text-[10px] uppercase tracking-wider text-[#6B665F] block mb-1.5">
+              <span className="font-['Space_Mono',monospace] text-[0.75rem] uppercase tracking-wider text-[#6B665F] block mb-1.5">
                 Dating Intentions
               </span>
               <p className="text-xs sm:text-sm font-semibold text-[#B85A3C]">
@@ -166,7 +166,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
         {profile.bio && (
           <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-5 sm:p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] relative">
             <Quote className="w-8 h-8 text-[#B85A3C]/15 absolute top-4 right-4 pointer-events-none" />
-            <span className="font-['Space_Mono',monospace] text-[11px] uppercase tracking-wider text-[#6B665F] block mb-2">
+            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#6B665F] block mb-2">
               About Me
             </span>
             <p className="text-sm sm:text-base text-[#1A1816] leading-relaxed italic font-['Plus_Jakarta_Sans',sans-serif]">
@@ -191,7 +191,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
         {photos[1] && (
           <div className="space-y-2">
             <div className="flex items-center justify-between px-1">
-              <span className="font-['Space_Mono',monospace] text-[10px] uppercase tracking-widest text-[#9C958D]">
+              <span className="font-['Space_Mono',monospace] text-[0.75rem] uppercase tracking-widest text-[#9C958D]">
                 02 / Lookbook
               </span>
             </div>
@@ -211,7 +211,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
         {/* INTERESTS & PASSIONS TAG CLOUD */}
         {profile.interests && profile.interests.length > 0 && (
           <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-5 sm:p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] space-y-3">
-            <span className="font-['Space_Mono',monospace] text-[11px] uppercase tracking-wider text-[#6B665F] block">
+            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#6B665F] block">
               Passions & Interests
             </span>
             <div className="flex flex-wrap gap-2">
@@ -243,7 +243,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
         {photos[2] && (
           <div className="space-y-2">
             <div className="flex items-center justify-between px-1">
-              <span className="font-['Space_Mono',monospace] text-[10px] uppercase tracking-widest text-[#9C958D]">
+              <span className="font-['Space_Mono',monospace] text-[0.75rem] uppercase tracking-widest text-[#9C958D]">
                 03 / Lookbook
               </span>
             </div>
@@ -263,7 +263,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
         {/* LIFESTYLE & VALUES CARD */}
         {(profile.lifestyle || profile.values) && (
           <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-5 sm:p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] space-y-4">
-            <span className="font-['Space_Mono',monospace] text-[11px] uppercase tracking-wider text-[#6B665F] block pb-2 border-b border-[#E8E4DC]">
+            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#6B665F] block pb-2 border-b border-[#E8E4DC]">
               Lifestyle & Values
             </span>
 
@@ -272,7 +272,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
                 <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
                   <Activity className="w-4 h-4 text-[#B85A3C] shrink-0" />
                   <div>
-                    <span className="text-[10px] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Exercise</span>
+                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Exercise</span>
                     <span className="font-semibold text-[#1A1816] capitalize">{profile.lifestyle.exercise}</span>
                   </div>
                 </div>
@@ -282,7 +282,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
                 <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
                   <Wine className="w-4 h-4 text-[#B85A3C] shrink-0" />
                   <div>
-                    <span className="text-[10px] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Drinking</span>
+                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Drinking</span>
                     <span className="font-semibold text-[#1A1816] capitalize">{profile.lifestyle.drinking}</span>
                   </div>
                 </div>
@@ -292,7 +292,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
                 <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
                   <Cigarette className="w-4 h-4 text-[#B85A3C] shrink-0" />
                   <div>
-                    <span className="text-[10px] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Smoking</span>
+                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Smoking</span>
                     <span className="font-semibold text-[#1A1816] capitalize">{profile.lifestyle.smoking}</span>
                   </div>
                 </div>
@@ -302,7 +302,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
                 <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
                   <PawPrint className="w-4 h-4 text-[#B85A3C] shrink-0" />
                   <div>
-                    <span className="text-[10px] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Pets</span>
+                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Pets</span>
                     <span className="font-semibold text-[#1A1816] capitalize">{profile.lifestyle.pets}</span>
                   </div>
                 </div>
@@ -312,7 +312,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
                 <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
                   <Compass className="w-4 h-4 text-[#B85A3C] shrink-0" />
                   <div>
-                    <span className="text-[10px] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Faith</span>
+                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Faith</span>
                     <span className="font-semibold text-[#1A1816]">{profile.values.faith}</span>
                   </div>
                 </div>
@@ -322,7 +322,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
                 <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
                   <HeartHandshake className="w-4 h-4 text-[#B85A3C] shrink-0" />
                   <div>
-                    <span className="text-[10px] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Family Plans</span>
+                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Family Plans</span>
                     <span className="font-semibold text-[#1A1816] capitalize">
                       {profile.values.familyPlans.replace(/_/g, ' ')}
                     </span>
@@ -351,7 +351,7 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between px-1">
-                  <span className="font-['Space_Mono',monospace] text-[10px] uppercase tracking-widest text-[#9C958D]">
+                  <span className="font-['Space_Mono',monospace] text-[0.75rem] uppercase tracking-widest text-[#9C958D]">
                     {String(photoIndex + 4).padStart(2, '0')} / Lookbook
                   </span>
                 </div>

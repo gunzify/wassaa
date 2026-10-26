@@ -17,7 +17,7 @@ supabase/   Supabase migrations and Edge Functions used by the current frontend
 
 ## Design system — Warm Terracotta & Editorial
 
-The interface was rebuilt around one design language. The tokens live in [`frontend/src/design-tokens.ts`](frontend/src/design-tokens.ts) and are the single source of truth; screens consume the palette through Tailwind arbitrary values that match those tokens.
+The interface was rebuilt around one design language. The tokens and component kit live in [`frontend/src/index.css`](frontend/src/index.css) and are the single source of truth; screens compose the kit classes and Tailwind arbitrary values that match that palette.
 
 **Palette**
 

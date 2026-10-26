@@ -11,3 +11,6 @@ coverage/
 .wrangler/
 .freebuff/
 /backend/.legacy-firebase/
+
+.vercel
+.env*.local

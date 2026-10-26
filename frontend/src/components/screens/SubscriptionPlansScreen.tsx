@@ -14,7 +14,7 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
   onClose
 }) => {
   return (
-    <div className="w-full min-h-screen py-8 sm:py-12 px-4 sm:px-6 lg:px-8 bg-[#F7F5F0]">
+    <div className="w-full pb-2">
       <div className="max-w-5xl mx-auto">
         {/* Navigation Bar */}
         <div className="flex items-center justify-between mb-8">
@@ -53,7 +53,7 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
                 </h3>
                 <div className="text-right">
                   <span className="text-lg font-bold text-[#1A1816] font-['Plus_Jakarta_Sans',sans-serif]">₦0</span>
-                  <span className="text-[11px] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Free Forever</span>
+                  <span className="text-[0.8125rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Free Forever</span>
                 </div>
               </div>
               <p className="text-xs text-[#6B665F] mb-6 leading-relaxed font-['Plus_Jakarta_Sans',sans-serif]">
@@ -92,7 +92,7 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
 
           {/* Card 2: WASSAA Plus */}
           <div className="bg-white rounded-2xl border-2 border-[#B85A3C] p-6 sm:p-7 shadow-[0_4px_16px_-2px_rgba(184,90,60,0.12)] flex flex-col justify-between relative">
-            <span className="absolute -top-3 left-1/2 -translate-y-0 -translate-x-1/2 bg-[#B85A3C] text-white text-[10px] font-semibold px-3 py-0.5 rounded-full shadow-xs uppercase tracking-wider font-['Space_Mono',monospace]">
+            <span className="absolute -top-3 left-1/2 -translate-y-0 -translate-x-1/2 bg-[#B85A3C] text-white text-[0.75rem] font-semibold px-3 py-0.5 rounded-full shadow-xs uppercase tracking-wider font-['Space_Mono',monospace]">
               Recommended
             </span>
             <div>
@@ -107,7 +107,7 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
                 </div>
                 <div className="text-right">
                   <span className="text-lg font-bold text-[#B85A3C] font-['Plus_Jakarta_Sans',sans-serif]">₦1,500</span>
-                  <span className="text-[11px] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">one-time</span>
+                  <span className="text-[0.8125rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">one-time</span>
                 </div>
               </div>
               <p className="text-xs text-[#6B665F] mb-6 leading-relaxed font-['Plus_Jakarta_Sans',sans-serif]">
@@ -158,7 +158,7 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
                 </div>
                 <div className="text-right">
                   <span className="text-lg font-bold text-[#1A1816] font-['Plus_Jakarta_Sans',sans-serif]">₦5,000</span>
-                  <span className="text-[11px] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">one-time</span>
+                  <span className="text-[0.8125rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">one-time</span>
                 </div>
               </div>
               <p className="text-xs text-[#6B665F] mb-6 leading-relaxed font-['Plus_Jakarta_Sans',sans-serif]">

@@ -133,15 +133,16 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
         </h1>
         <button
           onClick={onOpenFilter}
-          className="p-2.5 text-[#6B665F] hover:text-[#1A1816] hover:bg-[#F0ECE6] rounded-xl transition-colors"
+          className="w-11 h-11 flex items-center justify-center rounded-xl bg-white border border-[#E8E4DC] text-[#6B665F] hover:text-[#1A1816]"
           title="Filters"
+          aria-label="Discovery filters"
         >
           <SlidersHorizontal className="w-5 h-5" />
         </button>
       </div>
 
       {/* Card Deck */}
-      <div className="relative w-full aspect-[3/4] max-h-[520px]">
+      <div className="relative w-full aspect-[3/4] max-h-[min(70dvh,34rem)] min-h-[22rem]">
         {/* Underlay next card */}
         {nextProfile && currentProfile && (
           <motion.div
@@ -216,8 +217,8 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
               {/* Photo tap zones */}
               {photosCount > 1 && !isDragging && (
                 <div className="absolute inset-0 z-10 flex pointer-events-auto">
-                  <div onClick={handlePrevPhoto} className="w-1/2 h-2/3 cursor-pointer" />
-                  <div onClick={handleNextPhoto} className="w-1/2 h-2/3 cursor-pointer" />
+                  <div onClick={handlePrevPhoto} role="button" aria-label="Previous photo" className="w-1/2 h-2/3 cursor-pointer" />
+                  <div onClick={handleNextPhoto} role="button" aria-label="Next photo" className="w-1/2 h-2/3 cursor-pointer" />
                 </div>
               )}
 

@@ -46,7 +46,9 @@ type ScreenId =
   | 'match_screen'
   | 'chat'
   | 'matches_list'
+  | 'messages'
   | 'settings_privacy'
+  | 'settings'
   | 'subscription_plans';
 
 export default function App() {
@@ -64,6 +66,9 @@ export default function App() {
   const [activeMatchId, setActiveMatchId] = useState<string>('');
   const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([]);
   const [activeChatPartner, setActiveChatPartner] = useState<UserProfile | null>(null);
+  // Which list the conversation was opened from, so Back lands where the
+  // member came from (the Messages tab, the Matches list, or discovery).
+  const [chatOrigin, setChatOrigin] = useState<ScreenId>('messages');
 
   // Misc
   const [currentTier, setCurrentTier] = useState<SubscriptionTier>('free');
@@ -206,7 +211,7 @@ export default function App() {
   }, [refreshMatches, showToast]);
 
   useEffect(() => {
-    if (!['matches_list', 'chat'].includes(currentScreen)) return;
+    if (!['matches_list', 'messages', 'chat'].includes(currentScreen)) return;
     void refreshMatches();
     const t = setInterval(refreshMatches, 30000);
     return () => clearInterval(t);
@@ -497,7 +502,7 @@ export default function App() {
 
   const handlePhoneLinked = useCallback((profile: UserProfile) => {
     setCurrentUser(profile);
-    setCurrentScreen('settings_privacy');
+    setCurrentScreen('settings');
     showToast('Phone verified. Your trust badge is active.');
   }, [showToast]);
 
@@ -506,32 +511,34 @@ export default function App() {
   // Boot loading state
   if (booting) {
     return (
-      <div className="min-h-screen bg-[#F7F5F0] flex items-center justify-center">
+      <div className="min-h-[100dvh] bg-[#F7F5F0] flex items-center justify-center">
         <span className="font-['Cormorant_Garamond',serif] font-semibold text-2xl tracking-[0.12em] text-[#B85A3C]">WASSAA</span>
       </div>
     );
   }
 
   // Screens where the bottom navigation dock is visible
-  const showTabs = ['discover', 'profile_view', 'matches_list', 'chat', 'settings_privacy', 'subscription_plans'].includes(currentScreen) && currentUser;
+  const showTabs = ['discover', 'profile_view', 'matches_list', 'messages', 'chat', 'settings_privacy', 'settings', 'subscription_plans'].includes(currentScreen) && currentUser;
 
   // Screens that are full-bleed (no padding/centering from shell)
   const isFullBleed = ['splash', 'match_screen'].includes(currentScreen);
 
   return (
-    <div className="min-h-screen bg-[#F7F5F0] text-[#1A1816] flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
+    <div className="min-h-[100dvh] bg-[#F7F5F0] text-[#1A1816] flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
 
       {/* Toast notification */}
       {toast && (
-        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-[#1A1816] text-white px-5 py-2.5 rounded-xl text-sm font-medium shadow-[0_8px_32px_-4px_rgba(0,0,0,0.25)] flex items-center gap-2.5 animate-fade-in">
-          <CheckCircle2 className="w-4 h-4 text-[#2C6B56] shrink-0" />
-          <span>{toast}</span>
+        <div className="toast">
+          <div className="toast-pill" role="status" aria-live="polite">
+            <CheckCircle2 className="w-[18px] h-[18px] text-[#7FD1AE] shrink-0" />
+            <span>{toast}</span>
+          </div>
         </div>
       )}
 
       {/* Main content area */}
       <main className={`flex-1 flex flex-col ${isFullBleed ? '' : 'items-center'}`}>
-        <div className={`w-full flex flex-col ${isFullBleed ? 'flex-1' : 'max-w-[480px] mx-auto px-4 sm:px-5 py-4'} ${showTabs ? 'pb-20' : ''}`}>
+        <div className={`w-full flex flex-col ${isFullBleed ? 'flex-1' : `screen ${showTabs ? 'screen-docked' : ''}`}`}>
           {!currentUser ? (
             <>
               {currentScreen === 'splash' && (
@@ -618,7 +625,7 @@ export default function App() {
                     setCurrentUser(updatedProfile);
                     if (await handleUpdateUser(updatedProfile)) {
                       setCurrentScreen('discover');
-                      showToast('Profile activated! Your match queue is ready.');
+                      showToast("You're all set — fresh profiles land in Discover.");
                     }
                   }}
                 />
@@ -632,7 +639,7 @@ export default function App() {
                   onSwipeRight={handleSwipeRight}
                   onSuperLike={handleSuperLike}
                   onOpenProfile={() => setCurrentScreen('profile_view')}
-                  onOpenFilter={() => setCurrentScreen('settings_privacy')}
+                  onOpenFilter={() => setCurrentScreen('settings')}
                   onResetDeck={() => void loadDeck()}
                 />
               )}
@@ -652,6 +659,7 @@ export default function App() {
                   userA={currentUser}
                   userB={lastInteractedProfile || currentUser}
                   onStartChat={() => {
+                    setChatOrigin('messages');
                     if (pendingMatch) {
                       void openMatch(pendingMatch.id, pendingMatch.partner);
                       setPendingMatch(null);
@@ -671,7 +679,7 @@ export default function App() {
                   currentUserId={currentUser.id}
                   messages={activeMessages}
                   isBlocked={chatPartner ? blockedUserIds.includes(chatPartner.id) : false}
-                  onBack={() => setCurrentScreen('matches_list')}
+                  onBack={() => setCurrentScreen(chatOrigin)}
                   onSendMessage={handleSendMessage}
                   onSendPhoto={(file) => { void handleSendPhoto(file); }}
                   onBlockUser={handleBlockUser}
@@ -689,15 +697,25 @@ export default function App() {
                   matches={matches}
                   likesReceived={likesReceived}
                   canSeeLikes={currentTier !== 'free'}
-                  onSelectMatch={(id) => void openMatch(id)}
+                  onSelectMatch={(id) => { setChatOrigin('matches_list'); void openMatch(id); }}
                   onLikeBack={(profile) => { void handleLikeBack(profile); }}
                   onOpenUpgrade={() => setCurrentScreen('subscription_plans')}
                   onDiscover={() => setCurrentScreen('discover')}
                 />
               )}
 
-              {currentScreen === 'settings_privacy' && (
+              {currentScreen === 'messages' && (
+                <MatchesListScreen
+                  variant="messages"
+                  matches={matches}
+                  onSelectMatch={(id) => { setChatOrigin('messages'); void openMatch(id); }}
+                  onDiscover={() => setCurrentScreen('discover')}
+                />
+              )}
+
+              {(currentScreen === 'settings_privacy' || currentScreen === 'settings') && (
                 <SettingsPrivacyScreen
+                  view={currentScreen === 'settings' ? 'settings' : 'profile'}
                   currentUser={currentUser}
                   blockedUsersList={blockedUsers}
                   onUpdatePrivacy={async (newPrivacy) => {
@@ -716,14 +734,16 @@ export default function App() {
                   onUpdateUser={handleUpdateUser}
                   onDeleteAccount={handleDeleteAccount}
                   onVerifyPhone={() => setCurrentScreen('phone_verify')}
+                  onOpenSettings={() => setCurrentScreen('settings')}
+                  onBackToProfile={() => setCurrentScreen('settings_privacy')}
                 />
               )}
 
               {currentScreen === 'phone_verify' && (
                 <PhoneVerificationScreen
-                  onBack={() => setCurrentScreen('settings_privacy')}
+                  onBack={() => setCurrentScreen('settings')}
                   onVerified={handlePhoneLinked}
-                  onSkip={() => setCurrentScreen('settings_privacy')}
+                  onSkip={() => setCurrentScreen('settings')}
                 />
               )}
 
@@ -739,40 +759,35 @@ export default function App() {
         </div>
       </main>
 
-      {/* Bottom navigation */}
+      {/* Bottom navigation — floating dock, lifted clear of the home indicator */}
       {showTabs && (
-        <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-xl border-t border-[#E8E4DC]">
-          <div className="w-full max-w-[480px] mx-auto grid grid-cols-4 h-16 items-center px-2">
+        <nav className="dock" aria-label="Primary">
+          <div className="dock-inner">
             {([
               { id: 'discover' as ScreenId, icon: Home, label: 'Discover' },
               { id: 'matches_list' as ScreenId, icon: Heart, label: 'Matches' },
-              { id: 'chat' as ScreenId, icon: MessageSquare, label: 'Messages' },
+              { id: 'messages' as ScreenId, icon: MessageSquare, label: 'Messages' },
               { id: 'settings_privacy' as ScreenId, icon: User, label: 'Profile' },
             ] as const).map(({ id, icon: Icon, label }) => {
               const isActive = currentScreen === id ||
                 (id === 'discover' && currentScreen === 'profile_view') ||
-                (id === 'settings_privacy' && currentScreen === 'subscription_plans');
+                (id === 'messages' && currentScreen === 'chat') ||
+                (id === 'settings_privacy' &&
+                  ['settings', 'phone_verify', 'subscription_plans'].includes(currentScreen));
               return (
                 <button
                   key={id}
-                  onClick={() => {
-                    // The Messages tab needs a conversation; without one the chat
-                    // screen rendered an empty thread with the signed-in user as
-                    // the partner. Send people to their match list instead.
-                    if (id === 'chat' && !activeMatchId) { setCurrentScreen('matches_list'); return; }
-                    setCurrentScreen(id);
-                  }}
-                  className={`flex flex-col items-center justify-center gap-1 transition-colors ${
-                    isActive ? 'text-[#B85A3C]' : 'text-[#9C958D] hover:text-[#6B665F]'
-                  }`}
+                  type="button"
+                  aria-current={isActive ? 'page' : undefined}
+                  onClick={() => setCurrentScreen(id)}
+                  className={`dock-item ${isActive ? 'dock-item-active' : 'hover:text-[#6B665F]'}`}
                 >
-                  <Icon className="w-[22px] h-[22px]" strokeWidth={isActive ? 2.2 : 1.5} />
-                  <span className={`text-[11px] leading-none ${isActive ? 'font-semibold' : 'font-medium'}`}>{label}</span>
+                  <Icon className="w-7 h-7" strokeWidth={isActive ? 2.3 : 1.7} />
+                  <span className="dock-label">{label}</span>
                 </button>
               );
             })}
           </div>
-          <div className="h-[env(safe-area-inset-bottom,0px)]" />
         </nav>
       )}
     </div>

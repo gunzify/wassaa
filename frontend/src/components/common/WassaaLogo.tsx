@@ -29,13 +29,13 @@ export const WassaaLogo: React.FC<WassaaLogoProps> = ({
     xs: {
       emblem: 'w-6 h-6',
       title: 'text-sm tracking-[0.12em]',
-      tagline: 'text-[9px]',
+      tagline: 'text-[11px]',
       gap: 'gap-1.5'
     },
     sm: {
       emblem: 'w-8 h-8',
       title: 'text-base tracking-[0.12em]',
-      tagline: 'text-[10px]',
+      tagline: 'text-xs',
       gap: 'gap-2'
     },
     md: {

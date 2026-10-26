@@ -90,10 +90,10 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
         </div>
 
         <div className="text-center mb-7">
-          <h1 className="font-['Cormorant_Garamond',serif] text-3xl font-semibold text-[#1A1816] tracking-tight">
+          <h1 className="font-['Cormorant_Garamond',serif] text-[2rem] leading-[1.15] font-semibold text-[#1A1816] tracking-tight">
             {codeSent ? 'Check your inbox' : 'Continue with email'}
           </h1>
-          <p className="font-['Plus_Jakarta_Sans',sans-serif] text-sm text-[#6B665F] mt-2 leading-relaxed">
+          <p className="font-['Plus_Jakarta_Sans',sans-serif] text-[0.9375rem] text-[#6B665F] mt-2.5 leading-relaxed">
             {codeSent ? (
               <>
                 We sent a six-digit code to <span className="font-semibold text-[#1A1816]">{trimmedEmail}</span>. Enter it
@@ -106,18 +106,18 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
         </div>
 
         {error && (
-          <div className="mb-5 p-3 rounded-xl bg-[#FDF2EE] border border-[#E8D5CD] text-xs text-[#9B2C2C] font-medium leading-relaxed">
+          <div className="mb-5 p-3.5 rounded-xl bg-[#FDF2EE] border border-[#E8D5CD] text-[0.875rem] text-[#9B2C2C] font-medium leading-relaxed">
             {error}
           </div>
         )}
 
         {!codeSent ? (
           <div className="space-y-4">
-            <label htmlFor="wassaa-email" className="block text-xs font-semibold text-[#1A1816] uppercase tracking-wider font-['Space_Mono',monospace]">
+            <label htmlFor="wassaa-email" className="field-label font-['Space_Mono',monospace] uppercase tracking-wider">
               Email address
             </label>
-            <div className="flex items-center bg-white border border-[#E8E4DC] focus-within:border-[#B85A3C] focus-within:ring-2 focus-within:ring-[#B85A3C]/20 rounded-xl p-3.5 transition-all shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-              <Mail className="w-4 h-4 text-[#9C958D] shrink-0" />
+            <div className="relative">
+              <Mail className="w-5 h-5 text-[#9C958D] absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 id="wassaa-email"
                 type="email"
@@ -131,7 +131,7 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
                   if (event.key === 'Enter' && !busy) void handleSendCode();
                 }}
                 placeholder="you@example.com"
-                className="flex-1 pl-3 bg-transparent text-sm font-medium text-[#1A1816] placeholder-[#9C958D] outline-none"
+                className="field pl-12 font-medium"
               />
             </div>
 
@@ -139,12 +139,12 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
               type="button"
               onClick={() => void handleSendCode()}
               disabled={busy || !emailValid}
-              className="w-full py-3.5 px-6 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm transition-all shadow-[0_1px_3px_rgba(0,0,0,0.06)] active:scale-[0.99]"
+              className="btn btn-primary btn-block"
             >
               {busy ? 'Sending code…' : 'Send code'}
             </button>
 
-            <p className="flex items-start gap-2 text-[11px] text-[#6B665F] leading-relaxed pt-1">
+            <p className="flex items-start gap-2 text-[0.8125rem] text-[#6B665F] leading-relaxed pt-1">
               <ShieldCheck className="w-3.5 h-3.5 text-[#2C6B56] shrink-0 mt-0.5" />
               A verified email protects your account and lets us reach you about your profile. We never show it to other
               members.
@@ -152,7 +152,7 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
           </div>
         ) : (
           <div className="space-y-5">
-            <label htmlFor="wassaa-email-code" className="block text-xs font-semibold text-[#1A1816] uppercase tracking-wider font-['Space_Mono',monospace]">
+            <label htmlFor="wassaa-email-code" className="field-label font-['Space_Mono',monospace] uppercase tracking-wider">
               Six-digit code
             </label>
             <input
@@ -167,14 +167,14 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
               disabled={busy}
               aria-busy={busy}
               placeholder="000000"
-              className="w-full text-center text-2xl font-bold tracking-[0.55em] font-['Space_Mono',monospace] text-[#1A1816] placeholder:text-[#D7D2C8] bg-[#F7F5F0]/60 border border-[#E8E4DC] focus:border-[#B85A3C] focus:ring-2 focus:ring-[#B85A3C]/20 focus:bg-white rounded-xl py-4 outline-none transition-all disabled:opacity-60"
+              className="field text-center text-2xl font-bold tracking-[0.55em] font-['Space_Mono',monospace] placeholder:text-[#D7D2C8]"
             />
 
             <button
               type="button"
               onClick={() => void submitCode(code)}
               disabled={busy || code.length !== 6}
-              className="w-full py-3.5 px-6 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm transition-all shadow-[0_1px_3px_rgba(0,0,0,0.06)] active:scale-[0.99]"
+              className="btn btn-primary btn-block"
             >
               {busy ? 'Verifying…' : 'Verify email'}
             </button>
@@ -194,13 +194,13 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
               <button
                 type="button"
                 onClick={() => { setCodeSent(false); setCode(''); setError(null); }}
-                className="text-[11px] text-[#6B665F] hover:text-[#1A1816] underline underline-offset-2 transition-colors"
+                className="text-[0.8125rem] text-[#6B665F] hover:text-[#1A1816] underline underline-offset-2 transition-colors"
               >
                 Use a different email
               </button>
             </div>
 
-            <p className="text-[11px] text-[#9C958D] leading-relaxed text-center">
+            <p className="text-[0.8125rem] text-[#9C958D] leading-relaxed text-center">
               If you opened the sign-in link from the email instead, your session is already confirmed.
             </p>
           </div>

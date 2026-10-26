@@ -22,7 +22,7 @@ This document describes the current architecture, external services, requirement
 
 ### Frontend — `frontend/` (React PWA)
 - **React 18 + Vite 6 + Tailwind CSS 4** (`@tailwindcss/vite`).
-- **Design system — “Warm Terracotta & Editorial”**, single source of truth in `src/design-tokens.ts` (palette, spacing, radii, shadows, type scale) mirrored by `src/assets/branding.ts`.
+- **Design system — “Warm Terracotta & Editorial”**, single source of truth in `src/index.css` (palette variables, type scale, component kit) — `src/design-tokens.ts` was removed as dead code.
   - Canvas `#F7F5F0`, surface `#FFFFFF`, border `#E8E4DC`, ink `#1A1816`; brand terracotta `#B85A3C` (hover `#A04E33`, wash `#F5EAE5`); editorial olive `#2A3A2C`; verified `#2C6B56`; danger `#9B2C2C`.
   - Type: **Cormorant Garamond** (display serif), **Plus Jakarta Sans** (UI), **Space Mono** (uppercase micro-labels and section numbering), loaded from Google Fonts in `index.html`.
   - Shape: 8–24px radii, pill buttons, soft shadows, 4px spacing scale.
@@ -132,4 +132,4 @@ npm run db:seed      # optional demo profiles, same set as the memory store
 
 **Connecting to Supabase:** use the Supavisor pooler (`postgres.<project-ref>@aws-0-<region>.pooler.supabase.com`), port 5432 for this long-lived server, 6543 for serverless. Newer projects resolve `db.<ref>.supabase.co` to IPv6 only, so the direct host fails on IPv4-only networks; the pooler is IPv4. Do not append `?sslmode=require` — `pg` negotiates TLS in `store/pg.ts`, and the `require` parameter would force certificate verification against Supabase's self-signed chain.
 
-Design work starts in `frontend/src/design-tokens.ts`: change the palette or type scale there, then propagate — screen files reference the same hex values through Tailwind arbitrary values rather than a runtime theme object.
+Design work now starts in `frontend/src/index.css`: change the palette variables or component kit there, then propagate — screen files reference the same hex values through Tailwind arbitrary values rather than a runtime theme object.

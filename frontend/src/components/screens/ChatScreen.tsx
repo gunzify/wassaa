@@ -151,13 +151,13 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   };
 
   return (
-    <div className="w-full max-w-3xl mx-auto h-[calc(100vh-7rem)] min-h-[620px] flex flex-col bg-[#F7F5F0] text-[#1A1816] rounded-2xl border border-[#E8E4DC] shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] overflow-hidden relative font-['Plus_Jakarta_Sans',sans-serif]">
+    <div className="w-full h-[calc(100dvh-9.5rem)] min-h-[24rem] flex flex-col bg-[#F7F5F0] text-[#1A1816] rounded-2xl border border-[#E8E4DC] shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] overflow-hidden relative font-['Plus_Jakarta_Sans',sans-serif]">
       {/* Clean Chat Header */}
       <div className="bg-white border-b border-[#E8E4DC] px-4 py-3 flex items-center justify-between relative z-20">
         <div className="flex items-center gap-3">
           <button
             onClick={onBack}
-            className="p-1.5 -ml-1 text-[#1A1816] hover:bg-[#F5EAE5] rounded-full transition-colors cursor-pointer"
+            className="w-11 h-11 -ml-2 flex items-center justify-center text-[#1A1816] hover:bg-[#F5EAE5] rounded-full"
             title="Back to matches"
             aria-label="Back to matches"
           >
@@ -186,7 +186,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
             <h3 className="text-sm font-semibold text-[#1A1816] truncate">
               {partner.name}
             </h3>
-            <div className="text-[11px] text-[#6B665F]">
+            <div className="text-[0.8125rem] text-[#6B665F]">
               {localBlocked ? (
                 <span className="text-[#9B2C2C] font-medium flex items-center gap-1">
                   <UserX className="w-3 h-3 inline" /> Blocked contact
@@ -214,7 +214,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
             <div className="absolute right-0 top-11 w-56 bg-white rounded-xl shadow-[0_8px_32px_-4px_rgba(0,0,0,0.12)] border border-[#E8E4DC] p-1.5 z-30 animate-fade-in text-xs">
               <div className="px-3 py-2 border-b border-[#E8E4DC] flex items-center gap-2 text-[#6B665F]">
                 <ShieldCheck className="w-4 h-4 text-[#B85A3C]" />
-                <span className="text-[11px] font-semibold text-[#1A1816]">Safety & Controls</span>
+                <span className="text-[0.8125rem] font-semibold text-[#1A1816]">Safety & Controls</span>
               </div>
 
               {onViewProfile && (
@@ -276,13 +276,13 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
         <div className="bg-[#9B2C2C]/10 border-b border-[#9B2C2C]/20 px-4 py-2.5 flex items-center justify-between text-xs text-[#9B2C2C] z-10">
           <div className="flex items-center gap-2">
             <UserX className="w-4 h-4 text-[#9B2C2C] shrink-0" />
-            <span className="text-[11px] font-medium leading-tight">
+            <span className="text-[0.8125rem] font-medium leading-tight">
               You have blocked this contact. Communication is suspended.
             </span>
           </div>
           <button
             onClick={handleUnblock}
-            className="text-[11px] font-semibold text-[#9B2C2C] hover:underline shrink-0 ml-2 cursor-pointer"
+            className="text-[0.8125rem] font-semibold text-[#9B2C2C] hover:underline shrink-0 ml-2 cursor-pointer"
           >
             Unblock
           </button>
@@ -302,7 +302,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
                 <div className="max-w-[78%] rounded-2xl border border-[#E8E4DC] bg-white px-4 py-2.5 text-xs text-[#6B665F]">
                   Voice messages are not available in this version.
                 </div>
-                <span className="text-[10px] text-[#9C958D] mt-1 font-['Space_Mono',monospace] tracking-wider uppercase">
+                <span className="text-[0.75rem] text-[#9C958D] mt-1 font-['Space_Mono',monospace] tracking-wider uppercase">
                   {formatTime(msg.createdAt)}
                 </span>
               </div>
@@ -329,7 +329,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
                     </p>
                   )}
                 </div>
-                <span className="text-[10px] text-[#9C958D] mt-1 font-['Space_Mono',monospace] tracking-wider uppercase">
+                <span className="text-[0.75rem] text-[#9C958D] mt-1 font-['Space_Mono',monospace] tracking-wider uppercase">
                   {formatTime(msg.createdAt)}
                 </span>
               </div>
@@ -351,7 +351,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
               >
                 <p>{msg.text}</p>
               </div>
-              <span className="text-[10px] text-[#9C958D] mt-1 font-['Space_Mono',monospace] tracking-wider uppercase">
+              <span className="text-[0.75rem] text-[#9C958D] mt-1 font-['Space_Mono',monospace] tracking-wider uppercase">
                 {formatTime(msg.createdAt)}
               </span>
             </div>
@@ -430,7 +430,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
             <img
               src={previewMedia}
               alt="Enlarged media"
-              className="w-full h-auto max-h-[75vh] object-cover"
+              className="w-full h-auto max-h-[75dvh] object-cover"
               referrerPolicy="no-referrer"
             />
             <div className="p-4 bg-[#1A1816] text-[#F7F5F0] flex justify-between items-center text-xs">

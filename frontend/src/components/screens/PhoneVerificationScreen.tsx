@@ -102,20 +102,20 @@ export const PhoneVerificationScreen: React.FC<PhoneVerificationScreenProps> = (
   }, [codeSent, phoneNumber, otp, busy]);
 
   return (
-    <div className="w-full min-h-[640px] flex items-center justify-center p-4 sm:p-6 bg-[#F7F5F0]">
-      <div className="w-full max-w-md bg-white rounded-2xl border border-[#E8E4DC] p-6 sm:p-8 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] flex flex-col justify-between">
+    <div className="w-full min-h-[calc(100dvh-8rem)] flex items-center justify-center py-2">
+      <div className="w-full bg-white rounded-2xl border border-[#E8E4DC] p-5 sm:p-7 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] flex flex-col justify-between">
         <div>
           {/* Header navigation */}
           <div className="flex items-center justify-between mb-6">
             <button
               type="button"
               onClick={onBack}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#6B665F] hover:text-[#1A1816] transition-colors p-2 -ml-2 rounded-lg hover:bg-[#F7F5F0]"
+              className="inline-flex items-center gap-1.5 text-[0.9375rem] font-semibold text-[#6B665F] hover:text-[#1A1816] px-2 -ml-2 rounded-lg hover:bg-[#F7F5F0]"
             >
               <ChevronLeft className="w-4 h-4" />
               <span>Back</span>
             </button>
-            <span className="font-['Space_Mono',monospace] text-[11px] uppercase tracking-wider text-[#9C958D]">
+            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#9C958D]">
               {codeSent ? 'Verification' : 'Optional step'}
             </span>
           </div>
@@ -142,11 +142,11 @@ export const PhoneVerificationScreen: React.FC<PhoneVerificationScreenProps> = (
           {/* Phone input stage */}
           {!codeSent ? (
             <div className="space-y-4 mb-6">
-              <label className="block text-xs font-semibold text-[#1A1816] uppercase tracking-wider font-['Space_Mono',monospace]">
-                Mobile Number
+              <label className="field-label font-['Space_Mono',monospace] uppercase tracking-wider">
+                Mobile number
               </label>
-              <div className="flex items-center bg-white border border-[#E8E4DC] focus-within:border-[#B85A3C] focus-within:ring-2 focus-within:ring-[#B85A3C]/20 rounded-xl p-3.5 transition-all shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-                <div className="flex items-center gap-2 pr-3 border-r border-[#E8E4DC] text-xs font-semibold text-[#1A1816] select-none">
+              <div className="field flex items-center p-0 overflow-hidden">
+                <div className="flex items-center gap-2 px-4 border-r border-[#E8E4DC] text-[0.9375rem] font-semibold text-[#1A1816] select-none shrink-0 self-stretch">
                   <span className="text-base leading-none">🇳🇬</span>
                   <span className="font-['Space_Mono',monospace]">+234</span>
                 </div>
@@ -158,7 +158,7 @@ export const PhoneVerificationScreen: React.FC<PhoneVerificationScreenProps> = (
                     if (cleaned.length <= 11) setPhoneNumber(cleaned);
                   }}
                   placeholder="801 234 5678"
-                  className="flex-1 pl-3.5 bg-transparent text-sm font-semibold text-[#1A1816] placeholder-[#9C958D] outline-none tracking-wider font-['Space_Mono',monospace]"
+                  className="flex-1 min-w-0 px-4 bg-transparent font-semibold outline-none border-0 tracking-wider font-['Space_Mono',monospace]"
                 />
               </div>
 
@@ -166,18 +166,18 @@ export const PhoneVerificationScreen: React.FC<PhoneVerificationScreenProps> = (
                 type="button"
                 onClick={handleSendCode}
                 disabled={busy || phoneNumber.length < 10}
-                className="w-full py-3.5 px-6 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm transition-all shadow-[0_1px_3px_rgba(0,0,0,0.06)] active:scale-[0.99]"
+                className="btn btn-primary btn-block"
               >
-                {busy ? 'Sending code…' : 'Send Code'}
+                {busy ? 'Sending code…' : 'Send code'}
               </button>
 
               {onSkip && (
                 <button
                   type="button"
                   onClick={onSkip}
-                  className="w-full py-2.5 px-6 rounded-full text-[#6B665F] hover:text-[#1A1816] font-medium text-xs transition-colors flex items-center justify-center gap-1.5"
+                  className="w-full px-6 rounded-full text-[#6B665F] hover:text-[#1A1816] font-semibold text-[0.9375rem] flex items-center justify-center gap-1.5"
                 >
-                  <SkipForward className="w-3.5 h-3.5" />
+                  <SkipForward className="w-4 h-4" />
                   Skip for now
                 </button>
               )}
@@ -207,7 +207,7 @@ export const PhoneVerificationScreen: React.FC<PhoneVerificationScreenProps> = (
               </div>
 
               <div className="text-center pt-2">
-                <p className="text-xs text-[#6B665F] font-['Plus_Jakarta_Sans',sans-serif]">
+                <p className="text-[0.9375rem] text-[#6B665F] font-['Plus_Jakarta_Sans',sans-serif]">
                   Didn't receive a code?{' '}
                   <button
                     type="button"
@@ -221,7 +221,7 @@ export const PhoneVerificationScreen: React.FC<PhoneVerificationScreenProps> = (
                 <button
                   type="button"
                   onClick={() => { setCodeSent(false); setOtp(''); setError(null); }}
-                  className="mt-3 text-[11px] text-[#6B665F] hover:text-[#1A1816] underline underline-offset-2 transition-colors"
+                  className="mt-3 text-[0.8125rem] text-[#6B665F] hover:text-[#1A1816] underline underline-offset-2 transition-colors"
                 >
                   Use a different number
                 </button>
@@ -238,7 +238,7 @@ export const PhoneVerificationScreen: React.FC<PhoneVerificationScreenProps> = (
                 key={digit}
                 type="button"
                 onClick={() => handleKeyPress(digit)}
-                className="h-11 sm:h-12 rounded-xl bg-[#F7F5F0] hover:bg-[#F5EAE5] active:scale-95 text-base font-semibold text-[#1A1816] transition-all flex items-center justify-center border border-transparent hover:border-[#E8E4DC]"
+                className="h-14 rounded-xl bg-[#F7F5F0] hover:bg-[#F5EAE5] text-lg font-semibold text-[#1A1816] flex items-center justify-center border border-transparent"
               >
                 {digit}
               </button>
@@ -247,7 +247,7 @@ export const PhoneVerificationScreen: React.FC<PhoneVerificationScreenProps> = (
             <button
               type="button"
               onClick={() => handleKeyPress('0')}
-              className="h-11 sm:h-12 rounded-xl bg-[#F7F5F0] hover:bg-[#F5EAE5] active:scale-95 text-base font-semibold text-[#1A1816] transition-all flex items-center justify-center border border-transparent hover:border-[#E8E4DC]"
+              className="h-14 rounded-xl bg-[#F7F5F0] hover:bg-[#F5EAE5] text-lg font-semibold text-[#1A1816] flex items-center justify-center border border-transparent"
             >
               0
             </button>
@@ -255,7 +255,7 @@ export const PhoneVerificationScreen: React.FC<PhoneVerificationScreenProps> = (
               type="button"
               onClick={handleDelete}
               aria-label="Delete"
-              className="h-11 sm:h-12 rounded-xl bg-[#F7F5F0] hover:bg-[#F5EAE5] active:scale-95 text-[#6B665F] transition-all flex items-center justify-center border border-transparent hover:border-[#E8E4DC]"
+              className="h-14 rounded-xl bg-[#F7F5F0] hover:bg-[#F5EAE5] text-[#6B665F] flex items-center justify-center border border-transparent"
             >
               <Delete className="w-5 h-5" />
             </button>
