@@ -6,6 +6,8 @@ import {
   User,
   CheckCircle2,
   ChevronLeft,
+  ShieldAlert,
+  Compass,
 } from 'lucide-react';
 import { SplashScreen } from './components/screens/SplashScreen';
 import { SignUpScreen } from './components/screens/SignUpScreen';
@@ -16,12 +18,14 @@ import { ServiceSelectionScreen } from './components/screens/ServiceSelectionScr
 import { ProfileSetupScreen } from './components/screens/ProfileSetupScreen';
 import { IdentityVerificationScreen } from './components/screens/IdentityVerificationScreen';
 import { DiscoverScreen } from './components/screens/DiscoverScreen';
+import { ExploreScreen } from './components/screens/ExploreScreen';
 import { ProfileDetailScreen } from './components/screens/ProfileDetailScreen';
 import { MatchCelebrationScreen } from './components/screens/MatchCelebrationScreen';
 import { ChatScreen } from './components/screens/ChatScreen';
 import { MatchesListScreen } from './components/screens/MatchesListScreen';
 import { SettingsPrivacyScreen } from './components/screens/SettingsPrivacyScreen';
 import { SubscriptionPlansScreen } from './components/screens/SubscriptionPlansScreen';
+import { AppealScreen } from './components/screens/AppealScreen';
 import { RealDatingOnboardingFlow } from './components/onboarding/RealDatingOnboardingFlow';
 import { ReportCategoryKey } from './components/chat/BlockReportModal';
 import { WassaaApi } from './services/api';
@@ -29,7 +33,8 @@ import { preparePhoto } from './services/media';
 import { signOut, clearSession } from './services/supabase-auth';
 import { getProfileCompletion } from './services/profile-readiness';
 import { subscribeToMatch } from './services/realtime';
-import { UserProfile, MatchItem, SubscriptionTier, ChatMessage } from './types';
+import { initAnalytics, identifyUser, resetAnalytics, track } from './services/analytics';
+import { UserProfile, MatchItem, SubscriptionTier, ChatMessage, CreditPack } from './types';
 
 type ScreenId =
   | 'splash'
@@ -42,6 +47,7 @@ type ScreenId =
   | 'identity_verify'
   | 'onboarding_dating'
   | 'discover'
+  | 'explore'
   | 'profile_view'
   | 'match_screen'
   | 'chat'
@@ -49,7 +55,8 @@ type ScreenId =
   | 'messages'
   | 'settings_privacy'
   | 'settings'
-  | 'subscription_plans';
+  | 'subscription_plans'
+  | 'appeal';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
@@ -59,6 +66,11 @@ export default function App() {
   // Discovery
   const [deck, setDeck] = useState<UserProfile[]>([]);
   const [deckIndex, setDeckIndex] = useState(0);
+  // Explore keeps its own, wider page of people so browsing the grid never
+  // reshuffles the deck the member was halfway through.
+  const [exploreProfiles, setExploreProfiles] = useState<UserProfile[]>([]);
+  const [exploreLoading, setExploreLoading] = useState(false);
+  const [profileOrigin, setProfileOrigin] = useState<ScreenId>('discover');
 
   // Matches & chat
   const [matches, setMatches] = useState<MatchItem[]>([]);
@@ -72,6 +84,11 @@ export default function App() {
 
   // Misc
   const [currentTier, setCurrentTier] = useState<SubscriptionTier>('free');
+  const [credits, setCredits] = useState(0);
+  const [packs, setPacks] = useState<CreditPack[]>([]);
+  const [likesLocked, setLikesLocked] = useState(true);
+  const [likesCost, setLikesCost] = useState(15);
+  const [identityOrigin, setIdentityOrigin] = useState<ScreenId>('profile_setup');
   const [lastInteractedProfile, setLastInteractedProfile] = useState<UserProfile | null>(null);
   const [blockedUsers, setBlockedUsers] = useState<{ id: string; name: string; reason?: string; date?: string }[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -84,6 +101,30 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   }, []);
 
+  /** Open the credit store (the retired "Plans" screen, now a pack store). */
+  const openStore = useCallback(() => {
+    track('store_opened');
+    setCurrentScreen('subscription_plans');
+  }, []);
+
+  /**
+   * Shared API error handler: CREDITS_NEEDED (402) means the action ran out of
+   * credits — surface the reason and take the member to the store (KB §18E).
+   */
+  const handleApiError = useCallback((err: unknown, fallback: string) => {
+    const e = err as Error & { code?: string };
+    if (e.code === 'CREDITS_NEEDED') {
+      showToast(e.message || 'You are out of credits.');
+      setCurrentScreen('subscription_plans');
+      return;
+    }
+    showToast(e.message || fallback);
+  }, [showToast]);
+
+  // Product analytics stays off until the member consents (Settings → Trust &
+  // privacy); this only boots the SDK for members who already did.
+  useEffect(() => { initAnalytics(); }, []);
+
   // ---------- Boot: restore session ----------
   useEffect(() => {
     (async () => {
@@ -91,15 +132,21 @@ export default function App() {
         const user = await WassaaApi.fetchSession();
         if (user) {
           setCurrentUser(user);
+          identifyUser(user);
           setCurrentTier('free');
+          setCredits(user.credits ?? 0);
           const profileComplete = getProfileCompletion(user).complete;
-          setCurrentScreen(profileComplete ? 'discover' : 'onboarding_dating');
+          // A banned account goes straight to its appeal screen (KB §18D).
+          setCurrentScreen(user.accountStatus === 'banned' ? 'appeal' : profileComplete ? 'discover' : 'onboarding_dating');
           if (profileComplete) {
             const [ens, blocked] = await Promise.all([
               WassaaApi.getEntitlements(),
               WassaaApi.listBlocked()
             ]);
             setCurrentTier(ens.tier);
+            setCredits(ens.credits);
+            setPacks(ens.packs);
+            if (ens.revealLikesCost) setLikesCost(ens.revealLikesCost);
             setBlockedUsers(blocked);
             WassaaApi.getMatches().then((ms) => setMatches(ms)).catch(() => undefined);
           }
@@ -127,6 +174,28 @@ export default function App() {
     if (currentScreen === 'discover' && currentUser) void loadDeck();
   }, [currentScreen, currentUser, loadDeck]);
 
+  const loadExplore = useCallback(async () => {
+    setExploreLoading(true);
+    try {
+      const res = await WassaaApi.getDiscovery({ limit: 36 });
+      setExploreProfiles(res.profiles);
+    } catch {
+      /* browsing is browse-only: keep whatever page is already on screen */
+    } finally {
+      setExploreLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentScreen === 'explore' && currentUser && exploreProfiles.length === 0) void loadExplore();
+  }, [currentScreen, currentUser, exploreProfiles.length, loadExplore]);
+
+  const openProfile = useCallback((profile: UserProfile, origin: ScreenId) => {
+    setLastInteractedProfile(profile);
+    setProfileOrigin(origin);
+    setCurrentScreen('profile_view');
+  }, []);
+
   const currentDiscoverProfile = deck[deckIndex];
   const nextDiscoverProfile = deck[deckIndex + 1];
 
@@ -136,6 +205,7 @@ export default function App() {
   const handleSwipeLeft = useCallback(async (profile: UserProfile) => {
     setLastInteractedProfile(profile);
     advanceDeck();
+    track('pass_sent');
     try { await WassaaApi.pass(profile.id); } catch { /* pass is best-effort */ }
   }, [advanceDeck]);
 
@@ -143,7 +213,9 @@ export default function App() {
     setLastInteractedProfile(profile);
     try {
       const res = await WassaaApi.like(profile.id);
+      track('like_sent', { kind: 'like', is_match: res.isMatch });
       if (res.isMatch) {
+        track('match_created', { source: 'discover' });
         if (res.match) setPendingMatch({ id: res.match.id, partner: profile });
         setCurrentScreen('match_screen');
         WassaaApi.getMatches().then(setMatches).catch(() => undefined);
@@ -152,30 +224,34 @@ export default function App() {
       }
     } catch (err) {
       const e = err as Error & { code?: string };
-      if (e.code === 'LIKE_LIMIT') showToast('Daily like limit reached — upgrade for unlimited likes');
-      else showToast(e.message);
+      if (e.code === 'LIKE_LIMIT') showToast('Daily like limit reached — try again tomorrow');
+      else handleApiError(err, 'Could not send your like.');
     }
     advanceDeck();
-  }, [advanceDeck, showToast]);
+  }, [advanceDeck, showToast, handleApiError]);
 
   const handleSuperLike = useCallback(async (profile: UserProfile) => {
     setLastInteractedProfile(profile);
     try {
       const res = await WassaaApi.like(profile.id, { superLike: true });
+      track('like_sent', { kind: 'super_like', is_match: res.isMatch });
       if (res.isMatch) {
+        track('match_created', { source: 'discover' });
         if (res.match) setPendingMatch({ id: res.match.id, partner: profile });
         setCurrentScreen('match_screen');
         WassaaApi.getMatches().then(setMatches).catch(() => undefined);
       } else {
-        showToast(`Super Liked ${profile.name}!`);
+        showToast(`Super Liked ${profile.name}! (3 credits)`);
       }
+      if (typeof res.balance === 'number') setCredits(res.balance);
+      else void WassaaApi.getEntitlements().then((ens) => setCredits(ens.credits)).catch(() => undefined);
     } catch (err) {
       const e = err as Error & { code?: string };
-      if (e.code === 'SUPER_LIMIT') showToast('You have used this week’s Super Likes. Try again next week.');
-      else showToast(e.message);
+      if (e.code === 'SUPER_LIMIT') showToast('Your Super Like could not be sent. Try again shortly.');
+      else handleApiError(err, 'Super Like failed.');
     }
     advanceDeck();
-  }, [advanceDeck, showToast]);
+  }, [advanceDeck, showToast, handleApiError]);
 
   // ---------- Matches & chat polling ----------
   const refreshMatches = useCallback(async () => {
@@ -185,20 +261,44 @@ export default function App() {
     } catch { /* silent */ }
   }, []);
 
+  // Likes are a credit feature: the endpoint reports locked+price first, and
+  // only charges when we explicitly ask for the reveal.
   useEffect(() => {
-    if (currentScreen !== 'matches_list' || currentTier === 'free') {
-      if (currentTier === 'free') setLikesReceived([]);
-      return;
+    if (currentScreen !== 'matches_list') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await WassaaApi.getLikesReceived();
+        if (cancelled) return;
+        setLikesLocked(res.locked);
+        if (res.cost) setLikesCost(res.cost);
+        setLikesReceived(res.locked ? [] : res.likes);
+      } catch { if (!cancelled) setLikesReceived([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [currentScreen]);
+
+  const handleRevealLikes = useCallback(async () => {
+    try {
+      const res = await WassaaApi.getLikesReceived({ reveal: true });
+      setLikesLocked(res.locked);
+      setLikesReceived(res.likes);
+      if (res.locked) return;
+      showToast('Likes unlocked for the next 24 hours.');
+      if (typeof res.likes !== 'undefined') void WassaaApi.getEntitlements().then((ens) => setCredits(ens.credits)).catch(() => undefined);
+    } catch (err) {
+      handleApiError(err, 'Could not unlock likes.');
     }
-    WassaaApi.getLikesReceived().then(setLikesReceived).catch(() => setLikesReceived([]));
-  }, [currentScreen, currentTier]);
+  }, [showToast, handleApiError]);
 
   const handleLikeBack = useCallback(async (profile: UserProfile) => {
     try {
       const result = await WassaaApi.like(profile.id);
+      track('like_sent', { kind: 'like', is_match: result.isMatch });
       setLikesReceived((prev) => prev.filter((item) => item.id !== profile.id));
       await refreshMatches();
       if (result.isMatch) {
+        track('match_created', { source: 'likes_received' });
         setLastInteractedProfile(profile);
         if (result.match) setPendingMatch({ id: result.match.id, partner: profile });
         setCurrentScreen('match_screen');
@@ -283,7 +383,8 @@ export default function App() {
   const activeMatch = matches.find((m) => m.id === activeMatchId);
   const chatPartner = activeChatPartner || activeMatch?.profile;
 
-  const openMatch = useCallback(async (id: string, partner?: UserProfile) => {
+  const openMatch = useCallback(async (id: string, partner?: UserProfile, origin: ScreenId = 'messages') => {
+    track('chat_opened', { origin });
     setActiveMatchId(id);
     if (partner) setActiveChatPartner(partner);
     else {
@@ -301,16 +402,20 @@ export default function App() {
     const partner = chatPartner;
     if (partner && blockedUserIds.includes(partner.id)) { showToast('Cannot message a blocked contact.'); return false; }
     try {
-      const msg = await WassaaApi.sendMessage(activeMatchId, { kind: 'text', text });
-      setActiveMessages((prev) => [...prev, msg]);
-      lastMessageTs.current = msg.createdAt;
+      const { message: msg, balance } = await WassaaApi.sendMessage(activeMatchId, { kind: 'text', text });
+      if (msg) {
+        setActiveMessages((prev) => [...prev, msg]);
+        lastMessageTs.current = msg.createdAt;
+      }
+      track('message_sent', { kind: 'text' });
+      if (typeof balance === 'number') setCredits(balance);
       void refreshMatches();
       return true;
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Message failed to send');
+      handleApiError(err, 'Message failed to send');
       return false;
     }
-  }, [activeMatchId, chatPartner, blockedUserIds, showToast, refreshMatches]);
+  }, [activeMatchId, chatPartner, blockedUserIds, handleApiError, refreshMatches]);
 
   const handleSendPhoto = useCallback(async (file: File) => {
     if (!activeMatchId) return;
@@ -321,13 +426,15 @@ export default function App() {
       const prepared = await preparePhoto(file);
       const mediaUrl = await WassaaApi.uploadImage('chat_photo', prepared);
       if (!mediaUrl) throw new Error('Private photo sharing is unavailable until secure storage is configured.');
-      const msg = await WassaaApi.sendMessage(activeMatchId, { kind: 'photo', mediaUrl });
-      setActiveMessages((prev) => [...prev, msg]);
+      const { message: msg, balance } = await WassaaApi.sendMessage(activeMatchId, { kind: 'photo', mediaUrl });
+      if (msg) setActiveMessages((prev) => [...prev, msg]);
+      track('message_sent', { kind: 'photo' });
+      if (typeof balance === 'number') setCredits(balance);
       showToast('Photo shared!');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Photo failed');
+      handleApiError(err, 'Photo failed');
     }
-  }, [activeMatchId, chatPartner, blockedUserIds, showToast]);
+  }, [activeMatchId, chatPartner, blockedUserIds, showToast, handleApiError]);
 
   // ---------- Blocks / reports ----------
   const handleBlockUser = useCallback(async (partner: UserProfile, reason: string) => {
@@ -352,7 +459,7 @@ export default function App() {
     }
   }, [showToast]);
 
-  const handleReportUser = useCallback(async (params: { category: ReportCategoryKey; categoryLabel: string; details: string; alsoBlock: boolean }) => {
+  const handleReportUser = useCallback(async (params: { category: ReportCategoryKey; categoryLabel: string; details: string; alsoBlock: boolean; messageId?: string }) => {
     const partner = chatPartner || lastInteractedProfile;
     if (!partner) { showToast('Nothing to report.'); return; }
     try {
@@ -362,14 +469,18 @@ export default function App() {
         categoryLabel: params.categoryLabel,
         details: params.details,
         alsoBlock: params.alsoBlock,
-        serviceBranch: partner.service
+        serviceBranch: partner.service,
+        // Chat reports carry the conversation evidence so admins can review the
+        // full DM history behind the report (KB §18D).
+        matchId: chatPartner ? activeMatchId || undefined : undefined,
+        messageId: params.messageId
       });
       if (params.alsoBlock) await handleBlockUser(partner, `Reported for ${params.categoryLabel}`);
       showToast('Report submitted. Our team will review it.');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Report failed');
     }
-  }, [chatPartner, lastInteractedProfile, handleBlockUser, showToast]);
+  }, [chatPartner, lastInteractedProfile, activeMatchId, handleBlockUser, showToast]);
 
   // ---------- Profile updates ----------
   const handleUpdateUser = useCallback(async (updated: UserProfile): Promise<boolean> => {
@@ -399,6 +510,7 @@ export default function App() {
   const handleDeleteAccount = useCallback(async () => {
     try {
       await WassaaApi.deleteAccount();
+      resetAnalytics();
       setCurrentUser(null);
       setMatches([]);
       setDeck([]);
@@ -414,6 +526,7 @@ export default function App() {
     // `wassaa_session_token` shim is not the active session store, so relying on
     // it left the user signed in after "Sign out".
     try { await signOut(); } catch { clearSession(); }
+    resetAnalytics();
     setCurrentUser(null);
     setMatches([]);
     setDeck([]);
@@ -425,65 +538,100 @@ export default function App() {
     showToast('Signed out.');
   }, [showToast]);
 
-  // ---------- Billing ----------
-  const handleSelectTier = useCallback(async (tier: SubscriptionTier) => {
-    if (tier === 'free') { showToast('You are on the Free plan.'); return; }
+  // ---------- Billing: credit packs (KB §18E) ----------
+  const handleSelectPack = useCallback(async (packId: string) => {
+    const pack = packs.find((p) => p.id === packId);
+    if (!pack) { showToast('Unknown credit pack.'); return; }
     // Open synchronously from the click so popup blockers do not discard checkout
     // after the network request resolves.
     const checkoutWindow = window.open('about:blank', '_blank');
     if (checkoutWindow) checkoutWindow.opener = null;
     try {
-      showToast('Starting secure checkout…');
-      const res = await WassaaApi.checkout(tier);
+      showToast(`Starting secure checkout for ${pack.credits} credits…`);
+      const res = await WassaaApi.checkout(packId);
       if (res.authorizationUrl) {
         if (checkoutWindow) checkoutWindow.location.replace(res.authorizationUrl);
         else {
           window.location.assign(res.authorizationUrl);
           return;
         }
-        showToast('Complete payment in the Paystack window. We’ll confirm your plan here.');
+        showToast('Complete payment in the Paystack window. Your credits appear here automatically.');
         for (let attempt = 0; attempt < 40; attempt++) {
           await new Promise((resolve) => window.setTimeout(resolve, 3000));
           try {
             const activation = await WassaaApi.activate(res.reference);
-            setCurrentTier(activation.tier as SubscriptionTier);
-            showToast(`Your ${activation.tier === 'hyper_premium' ? 'WASSAA VIP' : 'WASSAA Plus'} plan is active.`);
+            setCredits(activation.credits);
+            showToast(`${activation.credits} credits added — your matches are waiting.`);
             return;
           } catch (error) {
             if (!(error instanceof Error) || !error.message.includes('Payment not confirmed yet')) throw error;
           }
         }
-        showToast('Payment is still processing. Your plan will appear after confirmation; reopen Plans to refresh.');
+        showToast('Payment is still processing. Your credits will appear shortly — reopen the store to refresh.');
         return;
       }
       checkoutWindow?.close();
       await WassaaApi.sandboxComplete(res.reference);
       const act = await WassaaApi.activate(res.reference);
-      setCurrentTier(act.tier as SubscriptionTier);
-      showToast(`Upgraded to ${act.tier === 'hyper_premium' ? 'WASSAA VIP' : 'WASSAA Plus'} (sandbox)`);
+      setCredits(act.credits);
+      showToast(`${act.credits} credits added (sandbox).`);
     } catch (err) {
       checkoutWindow?.close();
-      showToast(err instanceof Error ? err.message : 'Checkout failed');
+      handleApiError(err, 'Checkout failed');
     }
-  }, [showToast]);
+  }, [packs, showToast, handleApiError]);
+
+  const handleBoost = useCallback(async () => {
+    try {
+      const res = await WassaaApi.boost();
+      setCredits(res.balance);
+      showToast('Boost active — you are top of the deck for 1 hour.');
+    } catch (err) {
+      handleApiError(err, 'Boost failed.');
+    }
+  }, [showToast, handleApiError]);
+
+  // ---------- Appeal (restricted or banned accounts) ----------
+  const [appealBusy, setAppealBusy] = useState(false);
+  const handleSubmitAppeal = useCallback(async (note: string) => {
+    setAppealBusy(true);
+    try {
+      await WassaaApi.submitAppeal(note);
+      showToast('Appeal submitted — our team will review it.');
+      const fresh = await WassaaApi.fetchSession().catch(() => null);
+      if (fresh) setCurrentUser(fresh);
+    } catch (err) {
+      handleApiError(err, 'Could not submit your appeal.');
+    } finally {
+      setAppealBusy(false);
+    }
+  }, [showToast, handleApiError]);
 
   // ---------- Sign-in ----------
   // A verified email (or Google, which verifies the address for us) is the only
   // requirement to enter the app. Phone verification is an optional extra.
-  const enterWithProfile = useCallback((profile: UserProfile) => {
+  const enterWithProfile = useCallback((profile: UserProfile, method: 'email' | 'google') => {
     const user = profile.name === 'New member' ? { ...profile, name: '' } : profile;
     setCurrentUser(user);
+    identifyUser(user);
+    setCredits(user.credits ?? 0);
     const complete = getProfileCompletion(user).complete;
-    setCurrentScreen(complete ? 'discover' : 'onboarding_dating');
+    track('sign_in_completed', { method, onboarding_complete: complete });
+    setCurrentScreen(user.accountStatus === 'banned' ? 'appeal' : complete ? 'discover' : 'onboarding_dating');
     if (complete) {
-      void WassaaApi.getEntitlements().then((entitlements) => setCurrentTier(entitlements.tier)).catch(() => undefined);
+      void WassaaApi.getEntitlements().then((entitlements) => {
+        setCurrentTier(entitlements.tier);
+        setCredits(entitlements.credits);
+        setPacks(entitlements.packs);
+        if (entitlements.revealLikesCost) setLikesCost(entitlements.revealLikesCost);
+      }).catch(() => undefined);
       void WassaaApi.listBlocked().then(setBlockedUsers).catch(() => undefined);
       void WassaaApi.getMatches().then(setMatches).catch(() => undefined);
     }
   }, []);
 
   const handleEmailVerified = useCallback((profile: UserProfile) => {
-    enterWithProfile(profile);
+    enterWithProfile(profile, 'email');
   }, [enterWithProfile]);
 
   const handleGoogleCredential = useCallback(async (credential: string, nonce: string) => {
@@ -492,13 +640,22 @@ export default function App() {
     try {
       const result = await WassaaApi.signInWithGoogle(credential, nonce);
       if (!result.user) throw new Error('Google sign-in did not return a Wassaa profile. Try again.');
-      enterWithProfile(result.user);
+      enterWithProfile(result.user, 'google');
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Google sign-in failed. Try again.');
     } finally {
       setGoogleBusy(false);
     }
   }, [enterWithProfile, googleBusy, showToast]);
+
+  const signedIn = Boolean(currentUser);
+
+  // Screen-level funnel: the app has no URL router, so each shell screen is a
+  // step PostHog can build funnels and retention from.
+  useEffect(() => {
+    if (booting) return;
+    track('screen_viewed', { screen: currentScreen, signed_in: signedIn });
+  }, [currentScreen, booting, signedIn]);
 
   const handlePhoneLinked = useCallback((profile: UserProfile) => {
     setCurrentUser(profile);
@@ -517,11 +674,12 @@ export default function App() {
     );
   }
 
-  // Screens where the bottom navigation dock is visible
-  const showTabs = ['discover', 'profile_view', 'matches_list', 'messages', 'chat', 'settings_privacy', 'settings', 'subscription_plans'].includes(currentScreen) && currentUser;
+  // Screens where the bottom navigation dock is visible. A conversation is
+  // deliberately absent: opening a DM takes the whole screen.
+  const showTabs = ['discover', 'explore', 'matches_list', 'messages', 'settings_privacy', 'settings', 'subscription_plans'].includes(currentScreen) && currentUser;
 
   // Screens that are full-bleed (no padding/centering from shell)
-  const isFullBleed = ['splash', 'match_screen'].includes(currentScreen);
+  const isFullBleed = ['splash', 'match_screen', 'chat', 'profile_view'].includes(currentScreen);
 
   return (
     <div className="min-h-[100dvh] bg-[#F7F5F0] text-[#1A1816] flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
@@ -536,8 +694,17 @@ export default function App() {
         </div>
       )}
 
+      {/* Restriction notice: browsing stays open, interactions are blocked server-side */}
+      {currentUser && currentScreen !== 'appeal' && currentScreen !== 'splash' && currentUser.accountStatus === 'restricted' && (
+        <div className="w-full flex items-center gap-2 px-4 py-2.5 bg-[#FBEFE6] border-b border-[#E8D9CE] text-[#8A4B32] text-xs">
+          <ShieldAlert className="w-4 h-4 shrink-0" />
+          <span className="flex-1">Your account is restricted — you can browse, but not like or message.</span>
+          <button type="button" onClick={() => setCurrentScreen('appeal')} className="underline font-semibold shrink-0">Appeal</button>
+        </div>
+      )}
+
       {/* Main content area */}
-      <main className={`flex-1 flex flex-col ${isFullBleed ? '' : 'items-center'}`}>
+      <main className={`flex min-h-0 flex-1 flex-col ${isFullBleed ? '' : 'items-center'}`}>
         <div className={`w-full flex flex-col ${isFullBleed ? 'flex-1' : `screen ${showTabs ? 'screen-docked' : ''}`}`}>
           {!currentUser ? (
             <>
@@ -600,6 +767,7 @@ export default function App() {
                   onBack={() => setCurrentScreen('profession')}
                   onNext={(data) => {
                     setCurrentUser((prev) => (prev ? ({ ...prev, ...data } as UserProfile) : prev));
+                    setIdentityOrigin('profile_setup');
                     setCurrentScreen('identity_verify');
                   }}
                 />
@@ -607,13 +775,14 @@ export default function App() {
 
               {currentScreen === 'identity_verify' && (
                 <IdentityVerificationScreen
-                  onBack={() => setCurrentScreen('profile_setup')}
+                  onBack={() => setCurrentScreen(identityOrigin)}
                   onContinue={() => {
                     void handleUpdateUser({
                       ...(currentUser as UserProfile),
                       verification: { ...currentUser!.verification, status: 'pending' }
                     });
-                    setCurrentScreen('discover');
+                    showToast('Documents submitted. We will review them shortly.');
+                    setCurrentScreen(identityOrigin === 'profile_setup' ? 'discover' : 'settings_privacy');
                   }}
                 />
               )}
@@ -623,7 +792,9 @@ export default function App() {
                   initialUser={currentUser}
                   onComplete={async (updatedProfile) => {
                     setCurrentUser(updatedProfile);
+                    identifyUser(updatedProfile);
                     if (await handleUpdateUser(updatedProfile)) {
+                      track('onboarding_completed');
                       setCurrentScreen('discover');
                       showToast("You're all set — fresh profiles land in Discover.");
                     }
@@ -635,22 +806,35 @@ export default function App() {
                 <DiscoverScreen
                   currentProfile={currentDiscoverProfile}
                   nextProfile={nextDiscoverProfile}
+                  credits={credits}
                   onSwipeLeft={handleSwipeLeft}
                   onSwipeRight={handleSwipeRight}
                   onSuperLike={handleSuperLike}
-                  onOpenProfile={() => setCurrentScreen('profile_view')}
+                  onOpenProfile={(profile) => openProfile(profile, 'discover')}
                   onOpenFilter={() => setCurrentScreen('settings')}
+                  onOpenStore={openStore}
                   onResetDeck={() => void loadDeck()}
+                />
+              )}
+
+              {currentScreen === 'explore' && (
+                <ExploreScreen
+                  profiles={exploreProfiles}
+                  loading={exploreLoading}
+                  onOpenProfile={(profile) => openProfile(profile, 'explore')}
+                  onRefresh={() => void loadExplore()}
+                  onOpenFilter={() => setCurrentScreen('settings')}
+                  onDiscover={() => setCurrentScreen('discover')}
                 />
               )}
 
               {currentScreen === 'profile_view' && (
                 <ProfileDetailScreen
                   profile={lastInteractedProfile || currentDiscoverProfile || undefined as unknown as UserProfile}
-                  onBack={() => setCurrentScreen('discover')}
-                  onSwipeLeft={handleSwipeLeft}
-                  onSwipeRight={handleSwipeRight}
-                  onSuperLike={handleSuperLike}
+                  onBack={() => setCurrentScreen(profileOrigin)}
+                  onSwipeLeft={(profile) => { void handleSwipeLeft(profile); setCurrentScreen(profileOrigin); }}
+                  onSwipeRight={(profile) => { void handleSwipeRight(profile); setCurrentScreen(profileOrigin); }}
+                  onSuperLike={(profile) => { void handleSuperLike(profile); setCurrentScreen(profileOrigin); }}
                 />
               )}
 
@@ -661,12 +845,12 @@ export default function App() {
                   onStartChat={() => {
                     setChatOrigin('messages');
                     if (pendingMatch) {
-                      void openMatch(pendingMatch.id, pendingMatch.partner);
+                      void openMatch(pendingMatch.id, pendingMatch.partner, 'match_screen');
                       setPendingMatch(null);
                       return;
                     }
                     const newest = matches[0];
-                    if (newest) void openMatch(newest.id, newest.profile);
+                    if (newest) void openMatch(newest.id, newest.profile, 'match_screen');
                     else setCurrentScreen('matches_list');
                   }}
                   onKeepExploring={() => setCurrentScreen('discover')}
@@ -679,16 +863,15 @@ export default function App() {
                   currentUserId={currentUser.id}
                   messages={activeMessages}
                   isBlocked={chatPartner ? blockedUserIds.includes(chatPartner.id) : false}
+                  credits={credits}
+                  onOpenStore={openStore}
                   onBack={() => setCurrentScreen(chatOrigin)}
                   onSendMessage={handleSendMessage}
                   onSendPhoto={(file) => { void handleSendPhoto(file); }}
                   onBlockUser={handleBlockUser}
                   onReportUser={handleReportUser}
                   onUnblockUser={(partner) => void handleUnblockUser(partner.id)}
-                  onViewProfile={(partner) => {
-                    setLastInteractedProfile(partner);
-                    setCurrentScreen('profile_view');
-                  }}
+                  onViewProfile={(partner) => openProfile(partner, 'chat')}
                 />
               )}
 
@@ -696,11 +879,16 @@ export default function App() {
                 <MatchesListScreen
                   matches={matches}
                   likesReceived={likesReceived}
-                  canSeeLikes={currentTier !== 'free'}
-                  onSelectMatch={(id) => { setChatOrigin('matches_list'); void openMatch(id); }}
+                  canSeeLikes={!likesLocked}
+                  likesLocked={likesLocked}
+                  likesCost={likesCost}
+                  onRevealLikes={() => void handleRevealLikes()}
+                  onSelectMatch={(id) => { setChatOrigin('matches_list'); void openMatch(id, undefined, 'matches_list'); }}
                   onLikeBack={(profile) => { void handleLikeBack(profile); }}
-                  onOpenUpgrade={() => setCurrentScreen('subscription_plans')}
+                  onOpenUpgrade={openStore}
                   onDiscover={() => setCurrentScreen('discover')}
+                  suggestions={deck.filter((p) => !matches.some((m) => m.profile.id === p.id)).slice(0, 8)}
+                  onOpenSuggestion={(profile) => openProfile(profile, 'matches_list')}
                 />
               )}
 
@@ -708,8 +896,10 @@ export default function App() {
                 <MatchesListScreen
                   variant="messages"
                   matches={matches}
-                  onSelectMatch={(id) => { setChatOrigin('messages'); void openMatch(id); }}
+                  onSelectMatch={(id) => { setChatOrigin('messages'); void openMatch(id, undefined, 'messages'); }}
                   onDiscover={() => setCurrentScreen('discover')}
+                  suggestions={deck.filter((p) => !matches.some((m) => m.profile.id === p.id)).slice(0, 8)}
+                  onOpenSuggestion={(profile) => openProfile(profile, 'messages')}
                 />
               )}
 
@@ -717,6 +907,7 @@ export default function App() {
                 <SettingsPrivacyScreen
                   view={currentScreen === 'settings' ? 'settings' : 'profile'}
                   currentUser={currentUser}
+                  credits={credits}
                   blockedUsersList={blockedUsers}
                   onUpdatePrivacy={async (newPrivacy) => {
                     try {
@@ -734,6 +925,7 @@ export default function App() {
                   onUpdateUser={handleUpdateUser}
                   onDeleteAccount={handleDeleteAccount}
                   onVerifyPhone={() => setCurrentScreen('phone_verify')}
+                  onOpenIdentityVerify={() => { setIdentityOrigin('settings_privacy'); setCurrentScreen('identity_verify'); }}
                   onOpenSettings={() => setCurrentScreen('settings')}
                   onBackToProfile={() => setCurrentScreen('settings_privacy')}
                 />
@@ -749,9 +941,20 @@ export default function App() {
 
               {currentScreen === 'subscription_plans' && (
                 <SubscriptionPlansScreen
-                  currentTier={currentTier}
-                  onSelectTier={(tier) => void handleSelectTier(tier)}
+                  credits={credits}
+                  packs={packs}
+                  onSelectPack={(packId) => void handleSelectPack(packId)}
+                  onBoost={() => void handleBoost()}
                   onClose={() => setCurrentScreen('discover')}
+                />
+              )}
+
+              {currentScreen === 'appeal' && (
+                <AppealScreen
+                  user={currentUser}
+                  busy={appealBusy}
+                  onSubmit={handleSubmitAppeal}
+                  onSignOut={handleSignOut}
                 />
               )}
             </div>
@@ -765,15 +968,17 @@ export default function App() {
           <div className="dock-inner">
             {([
               { id: 'discover' as ScreenId, icon: Home, label: 'Discover' },
+              { id: 'explore' as ScreenId, icon: Compass, label: 'Explore' },
               { id: 'matches_list' as ScreenId, icon: Heart, label: 'Matches' },
               { id: 'messages' as ScreenId, icon: MessageSquare, label: 'Messages' },
               { id: 'settings_privacy' as ScreenId, icon: User, label: 'Profile' },
             ] as const).map(({ id, icon: Icon, label }) => {
               const isActive = currentScreen === id ||
-                (id === 'discover' && currentScreen === 'profile_view') ||
+                (id === 'discover' && currentScreen === 'profile_view' && profileOrigin === 'discover') ||
+                (id === 'explore' && currentScreen === 'profile_view' && profileOrigin === 'explore') ||
                 (id === 'messages' && currentScreen === 'chat') ||
                 (id === 'settings_privacy' &&
-                  ['settings', 'phone_verify', 'subscription_plans'].includes(currentScreen));
+                  ['settings', 'phone_verify'].includes(currentScreen));
               return (
                 <button
                   key={id}
@@ -782,7 +987,7 @@ export default function App() {
                   onClick={() => setCurrentScreen(id)}
                   className={`dock-item ${isActive ? 'dock-item-active' : 'hover:text-[#6B665F]'}`}
                 >
-                  <Icon className="w-7 h-7" strokeWidth={isActive ? 2.3 : 1.7} />
+                  <Icon className="h-6 w-6" strokeWidth={isActive ? 2.3 : 1.7} />
                   <span className="dock-label">{label}</span>
                 </button>
               );

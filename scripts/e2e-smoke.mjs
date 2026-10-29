@@ -4,8 +4,10 @@
  *
  * Exercises the hosted Edge API + Postgres migration + private Realtime path
  * end to end: onboarding gate, profile completion drafts, location/radius
- * preferences, ranked discovery, mutual match, two-way messaging, realtime
- * broadcast, and block enforcement (message API + channel authorization).
+ * preferences, ranked discovery, mutual match, two-way messaging (each send
+ * debits 1 credit, KB §18E), persona-marker concealment, the exhausted-balance
+ * 402 paywall, realtime broadcast, and block enforcement (message API +
+ * channel authorization).
  *
  * Reads credentials from local env files only. Never prints secrets.
  * Creates two clearly named QA users and deletes them (profiles + auth users)
@@ -375,6 +377,7 @@ async function main() {
   check('distance band is a 5 km multiple', personB && Number.isInteger(personB.distanceKm) && personB.distanceKm % 5 === 0, `distanceKm=${personB?.distanceKm}`);
   check('distance is plausible (~70 km Lagos↔Abeokuta)', personB && personB.distanceKm >= 50 && personB.distanceKm <= 90, `distanceKm=${personB?.distanceKm}`);
   check('raw coordinates are never returned', personB && personB.location_lat === undefined && personB.location_lng === undefined);
+  check('deck payloads carry no persona markers', personB && JSON.stringify(personB).indexOf('isNpc') === -1);
 
   const tightPrefs = await api('/me/preferences', { token: tokenA, method: 'PATCH', body: { gender: 'women', minAge: 18, maxAge: 45, maxDistanceKm: 5 } });
   check('radius can be tightened to 5 km', tightPrefs.status === 200, `status ${tightPrefs.status}`);
@@ -391,13 +394,23 @@ async function main() {
   check('B like completes the mutual match', likeB.status === 200 && likeB.data?.isMatch === true && Boolean(likeB.data?.match?.id), `status ${likeB.status}`);
   matchId = likeB.data?.match?.id || '';
 
-  step('8. Two-way messaging through the authenticated API');
+  step('8. Two-way messaging through the authenticated API (1 credit per send)');
+  // Session load applies today's drip, so this is the stable pre-send balance.
+  const creditsSessionA = await api('/auth/session', { token: tokenA });
+  const beforeA = Number(creditsSessionA.data?.user?.credits);
+  check('A loads a session with a credit balance', creditsSessionA.status === 200 && Number.isFinite(beforeA) && beforeA > 0, `credits=${beforeA}`);
   const sendA = await api(`/matches/${matchId}/messages`, { token: tokenA, method: 'POST', body: { kind: 'text', text: 'hello from A' } });
   check('A sends the first message', sendA.status === 200 && Boolean(sendA.data?.message?.id), `status ${sendA.status}`);
+  check('sending debits exactly 1 credit', Number(sendA.data?.balance) === beforeA - 1, `balance ${sendA.data?.balance} from ${beforeA}`);
   const fetchB = await api(`/matches/${matchId}/messages`, { token: tokenB });
   check('B receives A message', fetchB.status === 200 && (fetchB.data?.messages || []).some((m) => m.text === 'hello from A'));
+  check('conversation payload leaks no persona markers',
+    fetchB.data?.npcState === undefined && JSON.stringify(fetchB.data || {}).indexOf('isNpc') === -1);
+  const creditsSessionB = await api('/auth/session', { token: tokenB });
+  const beforeB = Number(creditsSessionB.data?.user?.credits);
   const sendB = await api(`/matches/${matchId}/messages`, { token: tokenB, method: 'POST', body: { kind: 'text', text: 'reply from B' } });
   check('B replies', sendB.status === 200, `status ${sendB.status}`);
+  check('a real member replying also pays 1 credit', Number(sendB.data?.balance) === beforeB - 1, `balance ${sendB.data?.balance} from ${beforeB}`);
   const fetchA = await api(`/matches/${matchId}/messages`, { token: tokenA });
   check('A receives B reply', fetchA.status === 200 && (fetchA.data?.messages || []).some((m) => m.text === 'reply from B'));
   const stranger = await api('/matches/00000000-0000-0000-0000-000000000000/messages', { token: tokenA });
@@ -457,6 +470,35 @@ async function main() {
   check('signed PUT uploads image bytes to R2', putStatus === 200, `HTTP ${putStatus}`);
   check('public URL serves the uploaded photo', publicStatus === 200, `HTTP ${publicStatus}`);
   check('test object removed from the bucket (no orphan media)', deleteStatus === 204 || deleteStatus === 200, `HTTP ${deleteStatus}`);
+
+  step('12. Exhausted balance hits the paywall (KB §18E)');
+  // Spend A's remaining credits through the same member send path the app uses
+  // (1 credit each) instead of writing the balance with a privileged client, so
+  // the paywall is proven end to end. Today's daily drip was already applied
+  // when A's session loaded, so it cannot silently refill mid-drain.
+  let paywallReached = false;
+  let drainedBalance = NaN;
+  for (let sent = 0; sent < 40 && !paywallReached; sent++) {
+    const drain = await api(`/matches/${matchId}/messages`, {
+      token: tokenA,
+      method: 'POST',
+      body: { kind: 'text', text: `credit drain ${sent + 1}` }
+    });
+    drainedBalance = Number(drain.data?.balance);
+    if (drain.status === 402 && drain.data?.code === 'CREDITS_NEEDED') paywallReached = true;
+    else if (drain.status !== 200) {
+      check('credit drain sends stay successful until the balance empties', false, `status ${drain.status}`);
+      break;
+    }
+  }
+  check('sending drains the balance to the paywall', paywallReached, `last balance ${drainedBalance}`);
+  const sendBroke = await api(`/matches/${matchId}/messages`, { token: tokenA, method: 'POST', body: { kind: 'text', text: 'no credits left' } });
+  check('exhausted balance refuses the send with 402 CREDITS_NEEDED',
+    sendBroke.status === 402 && sendBroke.data?.code === 'CREDITS_NEEDED',
+    `status ${sendBroke.status}, code ${sendBroke.data?.code}`);
+  const afterBroke = await api(`/matches/${matchId}/messages`, { token: tokenB });
+  check('failed spend leaves no message behind',
+    !(afterBroke.data?.messages || []).some((m) => m.text === 'no credits left'));
 }
 
 try {

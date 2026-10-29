@@ -1,23 +1,24 @@
-import React from 'react';
-import { 
-  ChevronLeft, 
-  Heart, 
-  X, 
-  Star, 
-  ShieldCheck, 
-  MapPin, 
+import React, { useRef, useState } from 'react';
+import {
+  ChevronLeft,
+  Heart,
+  X,
+  Star,
+  MapPin,
   Briefcase,
   GraduationCap,
   Sparkles,
-  Compass,
   Quote,
   Activity,
   Wine,
   Cigarette,
   PawPrint,
-  HeartHandshake
+  HeartHandshake,
+  Compass
 } from 'lucide-react';
 import { UserProfile } from '../../types';
+import { VerifiedMark } from '../common/VerifiedMark';
+import { affiliationLine, locationLine, nameLine, quoteLine } from '../../lib/profile-display';
 
 interface ProfileDetailScreenProps {
   profile: UserProfile;
@@ -27,393 +28,247 @@ interface ProfileDetailScreenProps {
   onSuperLike: (profile: UserProfile) => void;
 }
 
+/**
+ * The full profile a member opens from the centre of a Discover card.
+ * One scrollable column, a swipeable photo hero, and a pinned action bar.
+ */
 export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
   profile,
   onBack,
   onSwipeLeft,
   onSwipeRight,
-  onSuperLike,
+  onSuperLike
 }) => {
+  const [photoIndex, setPhotoIndex] = useState(0);
+  const galleryRef = useRef<HTMLDivElement>(null);
+
   if (!profile) return null;
 
-  const photos = profile.photos || [];
+  const photos = (profile.photos || []).filter(Boolean);
+  const prompts = (profile.prompts || []).filter((p) => p.answer?.trim());
+  const interests = profile.interests || [];
+  const bio = quoteLine(profile);
 
-  const prompts = profile.prompts || [];
+  const lifestyle = [
+    profile.lifestyle?.exercise && { icon: Activity, label: 'Exercise', value: profile.lifestyle.exercise },
+    profile.lifestyle?.drinking && { icon: Wine, label: 'Drinking', value: profile.lifestyle.drinking },
+    profile.lifestyle?.smoking && { icon: Cigarette, label: 'Smoking', value: profile.lifestyle.smoking },
+    profile.lifestyle?.pets && { icon: PawPrint, label: 'Pets', value: profile.lifestyle.pets },
+    profile.values?.faith && { icon: Compass, label: 'Faith', value: profile.values.faith },
+    profile.values?.familyPlans && {
+      icon: HeartHandshake,
+      label: 'Family plans',
+      value: profile.values.familyPlans.replace(/_/g, ' ')
+    }
+  ].filter(Boolean) as { icon: React.ComponentType<{ className?: string }>; label: string; value: string }[];
 
   return (
-    <div className="w-full text-[#1A1816] font-['Plus_Jakarta_Sans',sans-serif] relative pb-2">
-      {/* Top Floating Editorial Header */}
-      <div className="sticky top-0 z-30 bg-[#F7F5F0]/90 backdrop-blur-md border-b border-[#E8E4DC] px-4 py-3">
-        <div className="max-w-2xl mx-auto flex items-center">
+    <div className="flex min-h-0 w-full flex-1 flex-col bg-canvas">
+      <header className="sticky top-0 z-30 border-b border-line bg-canvas/90 backdrop-blur-md">
+        <div className="mx-auto flex w-full max-w-[34rem] items-center gap-2 px-3 py-2">
           <button
+            type="button"
             onClick={onBack}
-            className="w-10 h-10 rounded-full bg-[#FFFFFF] border border-[#E8E4DC] text-[#1A1816] flex items-center justify-center shadow-[0_1px_3px_rgba(0,0,0,0.06)] hover:bg-[#F5EAE5] hover:text-[#B85A3C] transition-all cursor-pointer"
-            aria-label="Back to discovery"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink transition-colors hover:bg-brand-tint"
+            aria-label="Back"
           >
-            <ChevronLeft className="w-5 h-5" />
+            <ChevronLeft className="h-5 w-5" />
           </button>
-
-          <div className="text-center flex-1">
-            <span className="font-['Space_Mono',monospace] text-[0.8125rem] font-semibold tracking-widest text-[#6B665F] uppercase block">
-              Lookbook
+          <div className="min-w-0 flex-1 text-center">
+            <span className="block text-[0.6875rem] font-semibold uppercase tracking-[0.16em] text-ink-muted">
+              Profile
             </span>
-            <span className="font-['Cormorant_Garamond',serif] text-base font-semibold text-[#1A1816]">
-              {profile.name}
-            </span>
+            <span className="block truncate text-[0.9375rem] font-semibold leading-tight">{profile.name}</span>
           </div>
-
-          <span className="w-10" aria-hidden="true" />
+          <span className="h-11 w-11 shrink-0" aria-hidden="true" />
         </div>
-      </div>
+      </header>
 
-      {/* Main Lookbook Vertical Scroll */}
-      <main className="max-w-2xl mx-auto px-4 py-6 space-y-6">
-        
-        {/* HERO PHOTO (Photo 0) */}
-        <div className="relative rounded-2xl overflow-hidden bg-[#E8E4DC] shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] border border-[#E8E4DC]">
-          <div className="aspect-[3/4] sm:aspect-[4/5] w-full relative">
-            {photos[0] ? (
-              <img src={photos[0]} alt={profile.name} className="w-full h-full object-cover object-top" referrerPolicy="no-referrer" />
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <div className="mx-auto w-full max-w-[34rem] px-4 pb-36 pt-3">
+          {/* Photo hero */}
+          <div className="relative overflow-hidden rounded-[1.75rem] bg-black shadow-card">
+            {photos.length ? (
+              <div
+                ref={galleryRef}
+                onScroll={(event) => {
+                  const el = event.currentTarget;
+                  const next = Math.round(el.scrollLeft / Math.max(el.clientWidth, 1));
+                  if (next !== photoIndex) setPhotoIndex(next);
+                }}
+                className="-mx-px flex h-[clamp(22rem,58dvh,34rem)] snap-x snap-mandatory overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                aria-label={`${profile.name}'s photos`}
+              >
+                {photos.map((photo, index) => (
+                  <img
+                    key={photo + index}
+                    src={photo}
+                    alt={`${profile.name}, photo ${index + 1}`}
+                    className="h-full w-full shrink-0 snap-center object-cover object-[50%_28%]"
+                    referrerPolicy="no-referrer"
+                  />
+                ))}
+              </div>
             ) : (
-              <div className="w-full h-full flex items-center justify-center bg-[#F0ECE6] text-[#6B665F] text-sm">No photo provided</div>
+              <div className="flex h-72 items-center justify-center bg-surface-subtle text-[0.875rem] text-ink-muted">
+                No photo provided
+              </div>
             )}
-            <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent pointer-events-none" />
 
-            {/* In-photo metadata overlay */}
-            <div className="absolute bottom-5 inset-x-5 text-white">
-              <div className="flex items-center gap-2.5 mb-1.5 flex-wrap">
-                <h1 className="font-['Cormorant_Garamond',serif] text-3xl sm:text-4xl font-bold tracking-tight text-white drop-shadow-sm">
-                  {profile.name}{profile.age ? `, ${profile.age}` : ''}
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-black/5" />
+
+            {photos.length > 1 && (
+              <div className="pointer-events-none absolute inset-x-0 top-0 flex gap-1.5 px-3 pt-3">
+                {photos.map((_, index) => (
+                  <span
+                    key={index}
+                    className={`h-[3px] flex-1 rounded-full transition-all ${index === photoIndex ? 'bg-white' : 'bg-white/30'}`}
+                  />
+                ))}
+              </div>
+            )}
+
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 p-5 text-white">
+              <div className="flex items-end gap-2">
+                <h1 className="font-['Cormorant_Garamond',serif] text-[2rem] font-semibold leading-none tracking-tight">
+                  {nameLine(profile)}
                 </h1>
                 {profile.verification?.status === 'verified' && (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#FFFFFF]/90 backdrop-blur-md text-[#2C6B56] text-[0.8125rem] font-semibold border border-[#2C6B56]/30 font-['Space_Mono',monospace] tracking-wider uppercase shadow-xs">
-                    <ShieldCheck className="w-3.5 h-3.5 stroke-[2.5]" />
-                    Verified
-                  </span>
+                  <VerifiedMark size={20} variant="onPhoto" className="mb-0.5" />
                 )}
               </div>
-
-              <p className="text-sm sm:text-base text-white/90 font-medium">
-                {profile.professionTitle}
-                {profile.companyOrOrg ? ` · ${profile.companyOrOrg}` : ''}
+              <p className="mt-2 text-[0.8125rem] font-semibold uppercase tracking-[0.13em] text-white/80">
+                {affiliationLine(profile)}
               </p>
-              <p className="text-xs sm:text-sm text-white/80 mt-0.5">
-                {[profile.neighborhood, profile.city, profile.state].filter(Boolean).join(', ')}
-              </p>
+              {locationLine(profile) && (
+                <p className="mt-1 flex items-center gap-1.5 text-[0.8125rem] text-white/70">
+                  <MapPin className="h-3.5 w-3.5 text-white/55" />
+                  {locationLine(profile)}
+                  {profile.distanceKm !== undefined ? ` · ${profile.distanceKm} km` : ''}
+                </p>
+              )}
             </div>
           </div>
-        </div>
 
-        {/* PROFILE ESSENTIALS CARD */}
-        <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-5 sm:p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-[#E8E4DC]">
-            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#6B665F]">
-              Profile Essentials
-            </span>
-            {profile.distanceKm !== undefined && (
-              <span className="font-['Space_Mono',monospace] text-[0.8125rem] text-[#6B665F] uppercase">
-                {profile.distanceKm} km away
-              </span>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs sm:text-sm text-[#1A1816]">
-            <div className="flex items-center gap-3">
-              <Briefcase className="w-4 h-4 text-[#B85A3C] shrink-0" />
-              <span className="truncate">
-                {profile.professionTitle}
-                {profile.companyOrOrg ? ` at ${profile.companyOrOrg}` : ''}
-              </span>
+          {/* Quick facts */}
+          <section className="card card-pad mt-4 space-y-3">
+            <div className="flex items-start gap-3 border-b border-line-soft pb-3">
+              <Briefcase className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
+              <div className="min-w-0">
+                <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.12em] text-ink-muted">
+                  Service & work
+                </p>
+                <p className="mt-0.5 text-[0.9375rem] font-medium leading-snug">{affiliationLine(profile)}</p>
+                {profile.skill ? (
+                  <p className="mt-0.5 text-[0.8125rem] text-ink-soft">{profile.skill}</p>
+                ) : null}
+              </div>
             </div>
 
             {profile.almaMater && (
               <div className="flex items-center gap-3">
-                <GraduationCap className="w-4 h-4 text-[#B85A3C] shrink-0" />
-                <span className="truncate">{profile.almaMater}</span>
+                <GraduationCap className="h-4 w-4 shrink-0 text-brand" />
+                <p className="text-[0.875rem] text-ink">{profile.almaMater}</p>
               </div>
             )}
-
-            <div className="flex items-center gap-3">
-              <MapPin className="w-4 h-4 text-[#B85A3C] shrink-0" />
-              <span className="truncate">
-                {[profile.neighborhood, profile.city, profile.state].filter(Boolean).join(', ')}
-              </span>
-            </div>
 
             {profile.datingGoal && (
               <div className="flex items-center gap-3">
-                <Sparkles className="w-4 h-4 text-[#B85A3C] shrink-0" />
-                <span className="font-medium text-[#B85A3C] capitalize">
-                  {profile.datingGoal.replace('_', ' ')}
-                </span>
+                <Sparkles className="h-4 w-4 shrink-0 text-brand" />
+                <p className="text-[0.875rem] font-medium capitalize text-brand">
+                  {profile.datingGoal.replace(/_/g, ' ')}
+                </p>
               </div>
             )}
-          </div>
+          </section>
 
-          {profile.intentions && profile.intentions.length > 0 && (
-            <div className="pt-3 border-t border-[#E8E4DC]">
-              <span className="font-['Space_Mono',monospace] text-[0.75rem] uppercase tracking-wider text-[#6B665F] block mb-1.5">
-                Dating Intentions
-              </span>
-              <p className="text-xs sm:text-sm font-semibold text-[#B85A3C]">
-                {profile.intentions.join(' · ')}
+          {/* About */}
+          {bio && (
+            <section className="card card-pad relative mt-3">
+              <Quote className="pointer-events-none absolute right-4 top-4 h-7 w-7 text-brand/15" />
+              <h2 className="t-section mb-2">In their words</h2>
+              <p className="text-[0.9375rem] leading-relaxed text-ink">{bio}</p>
+            </section>
+          )}
+
+          {/* Conversation prompts */}
+          {prompts.slice(0, 3).map((prompt) => (
+            <section key={prompt.id} className="card card-pad mt-3">
+              <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.12em] text-brand">
+                {prompt.question}
               </p>
-            </div>
+              <p className="mt-2 font-['Cormorant_Garamond',serif] text-[1.5rem] font-medium italic leading-snug">
+                “{prompt.answer}”
+              </p>
+            </section>
+          ))}
+
+          {/* Interests */}
+          {interests.length > 0 && (
+            <section className="mt-5">
+              <h2 className="t-section mb-2 px-1">Hobbies</h2>
+              <div className="flex flex-wrap gap-2">
+                {interests.map((tag) => (
+                  <span
+                    key={tag}
+                    className="rounded-full border border-line bg-surface px-3.5 py-1.5 text-[0.8125rem] font-medium text-ink"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Lifestyle */}
+          {lifestyle.length > 0 && (
+            <section className="card card-flush mt-5">
+              <h2 className="t-section px-4 pb-2 pt-4">Lifestyle</h2>
+              <div className="grid grid-cols-2 gap-px bg-line-soft">
+                {lifestyle.map(({ icon: Icon, label, value }) => (
+                  <div key={label} className="flex items-center gap-2.5 bg-surface px-3.5 py-3">
+                    <Icon className="h-4 w-4 shrink-0 text-brand" />
+                    <div className="min-w-0">
+                      <p className="text-[0.625rem] font-semibold uppercase tracking-[0.1em] text-ink-muted">{label}</p>
+                      <p className="truncate text-[0.8125rem] font-semibold capitalize text-ink">{value}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
           )}
         </div>
+      </div>
 
-        {/* BIO / ABOUT ME CARD */}
-        {profile.bio && (
-          <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-5 sm:p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] relative">
-            <Quote className="w-8 h-8 text-[#B85A3C]/15 absolute top-4 right-4 pointer-events-none" />
-            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#6B665F] block mb-2">
-              About Me
-            </span>
-            <p className="text-sm sm:text-base text-[#1A1816] leading-relaxed italic font-['Plus_Jakarta_Sans',sans-serif]">
-              "{profile.bio}"
-            </p>
-          </div>
-        )}
-
-        {/* FIRST PROMPT (if available) */}
-        {prompts[0] && (
-          <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] space-y-2">
-            <span className="font-['Space_Mono',monospace] text-xs font-semibold tracking-wider text-[#B85A3C] uppercase block">
-              {prompts[0].question}
-            </span>
-            <p className="font-['Cormorant_Garamond',serif] text-2xl sm:text-3xl font-semibold text-[#1A1816] leading-snug italic">
-              "{prompts[0].answer}"
-            </p>
-          </div>
-        )}
-
-        {/* SECOND PHOTO (Photo 1) */}
-        {photos[1] && (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between px-1">
-              <span className="font-['Space_Mono',monospace] text-[0.75rem] uppercase tracking-widest text-[#9C958D]">
-                02 / Lookbook
-              </span>
-            </div>
-            <div className="rounded-2xl overflow-hidden bg-[#E8E4DC] shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] border border-[#E8E4DC]">
-              <div className="aspect-[3/4] sm:aspect-[4/5] w-full">
-                <img
-                  src={photos[1]}
-                  alt={`${profile.name} gallery 2`}
-                  className="w-full h-full object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* INTERESTS & PASSIONS TAG CLOUD */}
-        {profile.interests && profile.interests.length > 0 && (
-          <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-5 sm:p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] space-y-3">
-            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#6B665F] block">
-              Passions & Interests
-            </span>
-            <div className="flex flex-wrap gap-2">
-              {profile.interests.map((tag) => (
-                <span
-                  key={tag}
-                  className="px-3.5 py-1.5 rounded-full bg-[#F7F5F0] border border-[#E8E4DC] text-xs font-medium text-[#1A1816] shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
-                >
-                  {tag}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* SECOND PROMPT (if available) */}
-        {prompts[1] && (
-          <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] space-y-2">
-            <span className="font-['Space_Mono',monospace] text-xs font-semibold tracking-wider text-[#B85A3C] uppercase block">
-              {prompts[1].question}
-            </span>
-            <p className="font-['Cormorant_Garamond',serif] text-2xl sm:text-3xl font-semibold text-[#1A1816] leading-snug italic">
-              "{prompts[1].answer}"
-            </p>
-          </div>
-        )}
-
-        {/* THIRD PHOTO (Photo 2) */}
-        {photos[2] && (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between px-1">
-              <span className="font-['Space_Mono',monospace] text-[0.75rem] uppercase tracking-widest text-[#9C958D]">
-                03 / Lookbook
-              </span>
-            </div>
-            <div className="rounded-2xl overflow-hidden bg-[#E8E4DC] shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] border border-[#E8E4DC]">
-              <div className="aspect-[3/4] sm:aspect-[4/5] w-full">
-                <img
-                  src={photos[2]}
-                  alt={`${profile.name} gallery 3`}
-                  className="w-full h-full object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* LIFESTYLE & VALUES CARD */}
-        {(profile.lifestyle || profile.values) && (
-          <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-5 sm:p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] space-y-4">
-            <span className="font-['Space_Mono',monospace] text-[0.8125rem] uppercase tracking-wider text-[#6B665F] block pb-2 border-b border-[#E8E4DC]">
-              Lifestyle & Values
-            </span>
-
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              {profile.lifestyle?.exercise && (
-                <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
-                  <Activity className="w-4 h-4 text-[#B85A3C] shrink-0" />
-                  <div>
-                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Exercise</span>
-                    <span className="font-semibold text-[#1A1816] capitalize">{profile.lifestyle.exercise}</span>
-                  </div>
-                </div>
-              )}
-
-              {profile.lifestyle?.drinking && (
-                <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
-                  <Wine className="w-4 h-4 text-[#B85A3C] shrink-0" />
-                  <div>
-                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Drinking</span>
-                    <span className="font-semibold text-[#1A1816] capitalize">{profile.lifestyle.drinking}</span>
-                  </div>
-                </div>
-              )}
-
-              {profile.lifestyle?.smoking && (
-                <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
-                  <Cigarette className="w-4 h-4 text-[#B85A3C] shrink-0" />
-                  <div>
-                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Smoking</span>
-                    <span className="font-semibold text-[#1A1816] capitalize">{profile.lifestyle.smoking}</span>
-                  </div>
-                </div>
-              )}
-
-              {profile.lifestyle?.pets && (
-                <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
-                  <PawPrint className="w-4 h-4 text-[#B85A3C] shrink-0" />
-                  <div>
-                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Pets</span>
-                    <span className="font-semibold text-[#1A1816] capitalize">{profile.lifestyle.pets}</span>
-                  </div>
-                </div>
-              )}
-
-              {profile.values?.faith && (
-                <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
-                  <Compass className="w-4 h-4 text-[#B85A3C] shrink-0" />
-                  <div>
-                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Faith</span>
-                    <span className="font-semibold text-[#1A1816]">{profile.values.faith}</span>
-                  </div>
-                </div>
-              )}
-
-              {profile.values?.familyPlans && (
-                <div className="p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] flex items-center gap-2.5">
-                  <HeartHandshake className="w-4 h-4 text-[#B85A3C] shrink-0" />
-                  <div>
-                    <span className="text-[0.75rem] text-[#6B665F] block font-['Space_Mono',monospace] uppercase">Family Plans</span>
-                    <span className="font-semibold text-[#1A1816] capitalize">
-                      {profile.values.familyPlans.replace(/_/g, ' ')}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* REMAINING PROMPTS & PHOTOS */}
-        {photos.slice(3).map((photoUrl, photoIndex) => {
-          const promptForThisPhoto = prompts[photoIndex + 2];
-          return (
-            <React.Fragment key={photoIndex}>
-              {promptForThisPhoto && (
-                <div className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] space-y-2">
-                  <span className="font-['Space_Mono',monospace] text-xs font-semibold tracking-wider text-[#B85A3C] uppercase block">
-                    {promptForThisPhoto.question}
-                  </span>
-                  <p className="font-['Cormorant_Garamond',serif] text-2xl sm:text-3xl font-semibold text-[#1A1816] leading-snug italic">
-                    "{promptForThisPhoto.answer}"
-                  </p>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between px-1">
-                  <span className="font-['Space_Mono',monospace] text-[0.75rem] uppercase tracking-widest text-[#9C958D]">
-                    {String(photoIndex + 4).padStart(2, '0')} / Lookbook
-                  </span>
-                </div>
-                <div className="rounded-2xl overflow-hidden bg-[#E8E4DC] shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] border border-[#E8E4DC]">
-                  <div className="aspect-[3/4] sm:aspect-[4/5] w-full">
-                    <img
-                      src={photoUrl}
-                      alt={`${profile.name} gallery ${photoIndex + 4}`}
-                      className="w-full h-full object-cover"
-                      referrerPolicy="no-referrer"
-                    />
-                  </div>
-                </div>
-              </div>
-            </React.Fragment>
-          );
-        })}
-
-        {/* Any extra prompts beyond photo count */}
-        {prompts.slice(Math.max(2, photos.length - 1)).map((prompt) => (
-          <div key={prompt.id} className="bg-[#FFFFFF] rounded-2xl border border-[#E8E4DC] p-6 shadow-[0_4px_16px_-2px_rgba(0,0,0,0.08)] space-y-2">
-            <span className="font-['Space_Mono',monospace] text-xs font-semibold tracking-wider text-[#B85A3C] uppercase block">
-              {prompt.question}
-            </span>
-            <p className="font-['Cormorant_Garamond',serif] text-2xl sm:text-3xl font-semibold text-[#1A1816] leading-snug italic">
-              "{prompt.answer}"
-            </p>
-          </div>
-        ))}
-      </main>
-
-      {/* STICKY BOTTOM ACTION BAR (3 Buttons: Pass / SuperLike / Like) */}
-      <div className="fixed bottom-6 inset-x-0 z-40 flex justify-center px-4 pointer-events-none">
-        <div className="pointer-events-auto bg-[#FFFFFF]/90 backdrop-blur-xl border border-[#E8E4DC] rounded-full px-6 py-2.5 shadow-[0_8px_32px_-4px_rgba(0,0,0,0.12)] flex items-center gap-6">
-          {/* Pass button */}
+      {/* Actions */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
+        <div className="pointer-events-auto flex items-center gap-5 rounded-full border border-line bg-surface/90 px-5 py-2.5 shadow-raised backdrop-blur-xl">
           <button
+            type="button"
             onClick={() => onSwipeLeft(profile)}
-            className="w-12 h-12 rounded-full bg-[#FFFFFF] border border-[#E8E4DC] text-[#6B665F] hover:text-[#9B2C2C] hover:bg-[#F5EAE5] hover:border-[#E8D5CD] flex items-center justify-center shadow-[0_1px_3px_rgba(0,0,0,0.06)] hover:scale-105 active:scale-95 transition-all cursor-pointer"
+            className="flex h-12 w-12 items-center justify-center rounded-full border border-line bg-surface text-ink-soft transition-colors hover:border-danger/30 hover:text-danger"
             aria-label="Pass"
             title="Pass"
           >
-            <X className="w-5 h-5 stroke-[2.5]" />
+            <X className="h-5 w-5 stroke-[2.4]" />
           </button>
-
-          {/* Super Like button */}
           <button
+            type="button"
             onClick={() => onSuperLike(profile)}
-            className="w-11 h-11 rounded-full bg-[#FFFFFF] border border-[#E8E4DC] text-[#B85A3C] hover:bg-[#F5EAE5] hover:border-[#B85A3C] flex items-center justify-center shadow-[0_1px_3px_rgba(0,0,0,0.06)] hover:scale-105 active:scale-95 transition-all cursor-pointer"
-            aria-label="Super Like"
-            title="Super Like"
+            className="flex h-11 w-11 items-center justify-center rounded-full border border-line bg-surface text-verified transition-colors hover:bg-verified-tint"
+            aria-label="Super like"
+            title="Super like"
           >
-            <Star className="w-5 h-5 fill-[#B85A3C]" />
+            <Star className="h-5 w-5" />
           </button>
-
-          {/* Like button */}
           <button
+            type="button"
             onClick={() => onSwipeRight(profile)}
-            className="w-14 h-14 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] text-white flex items-center justify-center shadow-[0_4px_16px_-2px_rgba(184,90,60,0.35)] hover:scale-105 active:scale-95 transition-all cursor-pointer"
+            className="flex h-14 w-14 items-center justify-center rounded-full bg-brand text-white shadow-brand transition-colors hover:bg-brand-dark"
             aria-label="Like"
             title="Like"
           >
-            <Heart className="w-6 h-6 fill-white" />
+            <Heart className="h-6 w-6 fill-white" />
           </button>
         </div>
       </div>

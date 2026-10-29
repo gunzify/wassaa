@@ -1,7 +1,9 @@
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
+import {initTheme} from './services/theme';
 
+initTheme();
 createRoot(document.getElementById('root')!).render(<App />);
 
 // The dev server must never be served through a cache; register only in builds.

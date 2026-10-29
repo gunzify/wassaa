@@ -1,85 +1,91 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  ShieldAlert, 
-  ShieldCheck, 
-  AlertTriangle, 
-  Lock, 
-  FileWarning, 
-  UserX, 
-  X, 
-  Check, 
-  ChevronRight,
-  Info,
-  Radio,
-  Loader2
+import {
+  ShieldAlert,
+  UserX,
+  EyeOff,
+  BadgeAlert,
+  MessagesSquare,
+  Banknote,
+  ImageOff,
+  Flag,
+  X,
+  Check,
+  CheckCircle2,
+  Loader2,
+  ChevronDown
 } from 'lucide-react';
 import { UserProfile } from '../../types';
+import { affiliationLine } from '../../lib/profile-display';
 
-export type ReportCategoryKey = 
-  | 'opsec_violation' 
-  | 'stolen_valor_impersonation' 
-  | 'harassment_threats' 
-  | 'financial_scam' 
-  | 'inappropriate_media' 
-  | 'intelligence_solicitation' 
+export type ReportCategoryKey =
+  | 'opsec_violation'
+  | 'stolen_valor_impersonation'
+  | 'harassment_threats'
+  | 'financial_scam'
+  | 'inappropriate_media'
+  | 'intelligence_solicitation'
   | 'other';
 
 export interface ReportCategoryOption {
   key: ReportCategoryKey;
   label: string;
-  badge: string;
   description: string;
-  recommendedForMilitary?: boolean;
+  icon: React.ComponentType<{ className?: string }>;
 }
 
-export const MILITARY_SAFETY_CATEGORIES: ReportCategoryOption[] = [
+/**
+ * Plain-language reasons that make sense to every member — a nurse, a trader,
+ * a soldier. Keys are unchanged so existing reports and the admin console keep
+ * working; only the words members read have changed.
+ */
+export const SAFETY_CATEGORIES: ReportCategoryOption[] = [
   {
-    key: 'opsec_violation',
-    label: 'OPSEC / Military Security Breach',
-    badge: 'OPSEC Priority',
-    description: 'Soliciting sensitive military deployments, base locations, patrol timetables, radio codes, or tactical ops.',
-    recommendedForMilitary: true
+    key: 'harassment_threats',
+    label: 'Harassment or threats',
+    description: 'Intimidation, stalking, blackmail, or anything that made you feel unsafe.',
+    icon: ShieldAlert
   },
   {
     key: 'stolen_valor_impersonation',
-    label: 'Impersonation or Stolen Valor',
-    badge: 'Integrity',
-    description: 'Falsely claiming military/paramilitary branch, forged warrants, fake rank insignia, or unauthorized uniform use.',
-    recommendedForMilitary: true
-  },
-  {
-    key: 'intelligence_solicitation',
-    label: 'Suspicious Foreign/Intel Inquiries',
-    badge: 'Counter-Intel',
-    description: 'Unusual questioning regarding defense infrastructure, equipment logistics, or government networks.',
-    recommendedForMilitary: true
-  },
-  {
-    key: 'harassment_threats',
-    label: 'Threats, Stalking, or Intimidation',
-    badge: 'Safety Alert',
-    description: 'Hostile conduct, physical threats, stalking around barracks/stations, or blackmail.'
+    label: 'Fake profile',
+    description: 'Pretending to be someone else, or claiming a job or identity that is not theirs.',
+    icon: BadgeAlert
   },
   {
     key: 'financial_scam',
-    label: 'Financial Fraud or Extortion',
-    badge: 'Scam Risk',
-    description: 'Soliciting emergency leave funds, clearance processing money, crypto transfers, or loan scams.'
+    label: 'Money request or scam',
+    description: 'Asking for transfers, emergency funds, crypto, or a “processing fee”.',
+    icon: Banknote
   },
   {
     key: 'inappropriate_media',
-    label: 'Unsolicited Explicit Media or Conduct',
-    badge: 'Code of Conduct',
-    description: 'Sending explicit, non-consensual imagery, sexual harassment, or severe boundary violation.'
+    label: 'Explicit or unwanted photos',
+    description: 'Unsolicited explicit images, sexual content, or pressure to send photos.',
+    icon: ImageOff
+  },
+  {
+    key: 'opsec_violation',
+    label: 'Sharing my private details',
+    description: 'Your address, workplace, unit or schedule — anything you did not offer to share.',
+    icon: EyeOff
+  },
+  {
+    key: 'intelligence_solicitation',
+    label: 'Suspicious questioning',
+    description: 'Persistent questions about security, government systems, or people you know.',
+    icon: MessagesSquare
   },
   {
     key: 'other',
-    label: 'Other Serious Safety Concern',
-    badge: 'General',
-    description: 'Any other suspicious behavior compromising member safety or community trust.'
+    label: 'Something else',
+    description: 'Anything that broke trust but does not fit the reasons above.',
+    icon: Flag
   }
 ];
+
+/** @deprecated kept for older imports; use SAFETY_CATEGORIES. */
+export const MILITARY_SAFETY_CATEGORIES = SAFETY_CATEGORIES;
 
 export interface BlockReportModalProps {
   isOpen: boolean;
@@ -95,6 +101,21 @@ export interface BlockReportModalProps {
   onJustBlockUser: (reason?: string) => Promise<void> | void;
 }
 
+const BLOCK_REASONS = [
+  'Not comfortable',
+  'Inappropriate messages',
+  'Suspicious behaviour',
+  'No longer interested'
+];
+
+/**
+ * Report or block — one calm column.
+ *
+ * The old sheet printed all seven reason descriptions at once, which made a
+ * safety action feel like a form. Now each reason is a single row and only the
+ * chosen one explains itself; the note field and the block switch stay folded
+ * away until they are wanted, and the confirmation is its own quiet state.
+ */
 export const BlockReportModal: React.FC<BlockReportModalProps> = ({
   isOpen,
   partner,
@@ -104,36 +125,47 @@ export const BlockReportModal: React.FC<BlockReportModalProps> = ({
   onJustBlockUser
 }) => {
   const [activeTab, setActiveTab] = useState<'report' | 'block'>(initialMode);
-  const [selectedCategory, setSelectedCategory] = useState<ReportCategoryKey>('opsec_violation');
+  const [selectedCategory, setSelectedCategory] = useState<ReportCategoryKey | null>(null);
   const [details, setDetails] = useState('');
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [alsoBlock, setAlsoBlock] = useState(true);
-  const [blockReason, setBlockReason] = useState('Safety & boundary preference');
+  const [blockReason, setBlockReason] = useState(BLOCK_REASONS[0]);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isDone, setIsDone] = useState(false);
   const [doneMessage, setDoneMessage] = useState('');
+
+  // Every open starts a clean sheet — a stale reason or block toggle from a
+  // previous conversation is the kind of detail that erodes trust.
+  useEffect(() => {
+    if (!isOpen) return;
+    setActiveTab(initialMode);
+    setSelectedCategory(null);
+    setDetails('');
+    setDetailsOpen(false);
+    setAlsoBlock(true);
+    setBlockReason(BLOCK_REASONS[0]);
+    setIsSubmitting(false);
+    setDoneMessage('');
+  }, [isOpen, initialMode]);
 
   if (!isOpen) return null;
 
   const handleConfirmReport = async () => {
+    if (!selectedCategory) return;
     setIsSubmitting(true);
     try {
-      const categoryItem = MILITARY_SAFETY_CATEGORIES.find((c) => c.key === selectedCategory);
+      const categoryItem = SAFETY_CATEGORIES.find((c) => c.key === selectedCategory);
       await onSubmitReportAndBlock({
         category: selectedCategory,
-        categoryLabel: categoryItem?.label || 'Security Report',
+        categoryLabel: categoryItem?.label || 'Safety report',
         details,
         alsoBlock
       });
       setDoneMessage(
         alsoBlock
-          ? `Report filed with Safety & OPSEC Integrity Desk. ${partner.name} has been blocked.`
-          : `Report filed with Safety & OPSEC Integrity Desk for investigation.`
+          ? `Our safety team has this. ${partner.name} has been blocked.`
+          : 'Our safety team will review this within 24 hours.'
       );
-      setIsDone(true);
-      setTimeout(() => {
-        setIsDone(false);
-        onClose();
-      }, 2000);
+      setTimeout(onClose, 2200);
     } catch (err) {
       console.error(err);
       setIsSubmitting(false);
@@ -144,12 +176,8 @@ export const BlockReportModal: React.FC<BlockReportModalProps> = ({
     setIsSubmitting(true);
     try {
       await onJustBlockUser(blockReason);
-      setDoneMessage(`${partner.name} has been blocked from contacting you.`);
-      setIsDone(true);
-      setTimeout(() => {
-        setIsDone(false);
-        onClose();
-      }, 1800);
+      setDoneMessage(`${partner.name} can no longer message you or see your profile.`);
+      setTimeout(onClose, 1800);
     } catch (err) {
       console.error(err);
       setIsSubmitting(false);
@@ -157,297 +185,257 @@ export const BlockReportModal: React.FC<BlockReportModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-xs select-none animate-fade-in">
+    <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 backdrop-blur-[3px] sm:items-center sm:p-4">
       <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 10 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 10 }}
-        className="w-full max-w-md bg-white rounded-3xl overflow-hidden shadow-2xl border border-[#E8E4DC] flex flex-col max-h-[92dvh]"
+        initial={{ opacity: 0, y: 28 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: 28 }}
+        transition={{ type: 'spring', stiffness: 460, damping: 38 }}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Report or block ${partner.name}`}
+        className="flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[1.75rem] border border-line bg-surface text-ink shadow-raised sm:max-w-[26rem] sm:rounded-[1.75rem]"
       >
-        {/* Header */}
-        <div className="bg-[#1F2421] text-white p-4 sm:p-5 flex items-start justify-between relative overflow-hidden">
-          <div className="flex items-center gap-3 z-10">
-            <div className="w-10 h-10 rounded-2xl bg-[#B85A3C]/20 border border-[#B85A3C]/40 flex items-center justify-center text-[#E58992]">
-              <ShieldAlert className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-['Cormorant_Garamond',serif] font-bold text-base text-white">
-                  Member Safety Center
-                </h3>
-                <span className="text-[0.75rem] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#B85A3C] text-white">
-                  Secure OPSEC
-                </span>
-              </div>
-              <p className="text-[0.8125rem] text-neutral-300 mt-0.5">
-                Protecting military personnel, uniformed services & civilians
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            disabled={isSubmitting}
-            className="text-neutral-400 hover:text-white p-1 rounded-full hover:bg-white/10 transition-colors z-10"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+        <div className="mx-auto mt-2.5 h-1 w-9 shrink-0 rounded-full bg-line sm:hidden" aria-hidden="true" />
 
-        {/* Target Profile Bar */}
-        <div className="bg-[#F7F5F0] border-b border-[#EBE6DF] px-4 py-2.5 flex items-center justify-between text-xs">
-          <div className="flex items-center gap-2.5">
-            <img
-              src={partner.photos[0]}
-              alt={partner.name}
-              className="w-8 h-8 rounded-full object-cover ring-1 ring-[#D8D2C7]"
-              referrerPolicy="no-referrer"
-            />
-            <div>
-              <span className="font-bold text-[#1A1816]">{partner.name}</span>
-              <span className="text-[#6B665F] text-[0.8125rem] ml-1.5">
-                {partner.service || partner.professionCategory}
-                {partner.rank ? ` • ${partner.rank}` : ''}
-              </span>
+        {doneMessage ? (
+          <div className="flex flex-col items-center px-7 pb-12 pt-9 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-verified-tint text-verified">
+              <CheckCircle2 className="h-6 w-6" />
             </div>
-          </div>
-          <span className="text-[0.75rem] font-mono text-[#9EA3A0] uppercase">
-            ID: {partner.id.slice(0, 8)}
-          </span>
-        </div>
-
-        {/* Success confirmation view */}
-        {isDone ? (
-          <div className="p-8 text-center flex flex-col items-center justify-center space-y-3">
-            <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center shadow-xs">
-              <Check className="w-6 h-6 stroke-[3]" />
-            </div>
-            <h4 className="font-['Cormorant_Garamond',serif] text-lg font-bold text-[#1A1816]">
-              Action Confirmed
-            </h4>
-            <p className="text-xs text-[#6B665F] max-w-xs leading-relaxed">
-              {doneMessage}
-            </p>
+            <h3 className="mt-4 font-['Cormorant_Garamond',serif] text-[1.75rem] font-semibold leading-tight">
+              Thank you
+            </h3>
+            <p className="mt-2 max-w-[19rem] text-[0.9375rem] leading-relaxed text-ink-soft">{doneMessage}</p>
           </div>
         ) : (
           <>
-            {/* Mode Switch Tabs */}
-            <div className="grid grid-cols-2 p-1.5 bg-[#FAF8F5] border-b border-[#EBE6DF] text-xs font-semibold">
-              <button
-                type="button"
-                onClick={() => setActiveTab('report')}
-                className={`py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 ${
-                  activeTab === 'report'
-                    ? 'bg-white text-[#B85A3C] shadow-xs'
-                    : 'text-[#6B665F] hover:text-[#1A1816]'
-                }`}
-              >
-                <FileWarning className="w-3.5 h-3.5" />
-                <span>Report & Protect</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('block')}
-                className={`py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 ${
-                  activeTab === 'block'
-                    ? 'bg-white text-[#1A1816] shadow-xs'
-                    : 'text-[#6B665F] hover:text-[#1A1816]'
-                }`}
-              >
-                <UserX className="w-3.5 h-3.5" />
-                <span>Block User Only</span>
-              </button>
+            {/* Who, and the two ways out of this conversation */}
+            <div className="shrink-0 px-5 pt-5">
+              <div className="flex items-center gap-3">
+                {partner.photos?.[0] ? (
+                  <img
+                    src={partner.photos[0]}
+                    alt=""
+                    className="h-11 w-11 shrink-0 rounded-full object-cover object-[50%_30%] ring-1 ring-line"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <span className="h-11 w-11 shrink-0 rounded-full bg-surface-subtle" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <h3 className="truncate text-[1.0625rem] font-semibold leading-tight">{partner.name}</h3>
+                  <p className="truncate text-[0.8125rem] text-ink-muted">{affiliationLine(partner)}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={isSubmitting}
+                  className="-mr-1 shrink-0 rounded-full text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+                  aria-label="Close"
+                >
+                  <X className="h-[1.15rem] w-[1.15rem]" />
+                </button>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-1 rounded-full bg-surface-subtle p-1" role="tablist">
+                {(
+                  [
+                    ['report', 'Report'],
+                    ['block', 'Block']
+                  ] as const
+                ).map(([tab, label]) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === tab}
+                    onClick={() => setActiveTab(tab)}
+                    className={`rounded-full py-2.5 text-[0.875rem] font-semibold transition-colors ${
+                      activeTab === tab ? 'bg-surface text-ink shadow-subtle' : 'text-ink-muted hover:text-ink'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            {/* Scrollable Body */}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 text-[#1A1816]">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-2 pt-4">
               {activeTab === 'report' ? (
-                <>
-                  <div>
-                    <label className="block text-xs font-bold text-[#1A1816] mb-1.5">
-                      Select Safety or OPSEC Incident Category:
-                    </label>
-                    <p className="text-[0.8125rem] text-[#6B665F] mb-2.5">
-                      Categorizing allows the Safety Integrity Desk to triage urgent threats immediately.
-                    </p>
+                <div>
+                  <p className="mb-2.5 text-[0.9375rem] font-semibold text-ink">What happened?</p>
 
-                    <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
-                      {MILITARY_SAFETY_CATEGORIES.map((cat) => {
-                        const isSelected = selectedCategory === cat.key;
-                        return (
-                          <div
-                            key={cat.key}
-                            onClick={() => setSelectedCategory(cat.key)}
-                            className={`p-3 rounded-2xl border text-left cursor-pointer transition-all ${
-                              isSelected
-                                ? 'border-[#B85A3C] bg-[#FDF6F7] shadow-xs ring-1 ring-[#B85A3C]'
-                                : 'border-[#E8E4DC] bg-white hover:bg-[#F7F5F0]'
+                  <div className="overflow-hidden rounded-2xl border border-line">
+                    {SAFETY_CATEGORIES.map((category, index) => {
+                      const Icon = category.icon;
+                      const selected = selectedCategory === category.key;
+                      return (
+                        <React.Fragment key={category.key}>
+                          {index > 0 && <div className="h-px bg-line-soft" />}
+                          <button
+                            type="button"
+                            onClick={() => setSelectedCategory(selected ? null : category.key)}
+                            aria-pressed={selected}
+                            className={`flex w-full items-start gap-3 px-3.5 py-2.5 text-left transition-colors ${
+                              selected ? 'bg-brand-tint/60' : 'bg-surface hover:bg-surface-subtle'
                             }`}
                           >
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-xs font-bold text-[#1A1816] flex items-center gap-2">
-                                <span
-                                  className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
-                                    isSelected
-                                      ? 'border-[#B85A3C] bg-[#B85A3C] text-white'
-                                      : 'border-[#B4ABA1] bg-white'
-                                  }`}
-                                >
-                                  {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
-                                </span>
-                                {cat.label}
+                            <span
+                              className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
+                                selected ? 'bg-brand text-white' : 'bg-surface-subtle text-ink-muted'
+                              }`}
+                              aria-hidden="true"
+                            >
+                              <Icon className="h-[0.875rem] w-[0.875rem]" />
+                            </span>
+                            <span className="min-w-0 flex-1 pt-0.5">
+                              <span className="block text-[0.9375rem] font-medium leading-snug text-ink">
+                                {category.label}
                               </span>
-                              <span
-                                className={`text-[0.75rem] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                                  cat.recommendedForMilitary
-                                    ? 'bg-[#E58992]/20 text-[#9B3944]'
-                                    : 'bg-[#E8E4DC] text-[#6B665F]'
-                                }`}
-                              >
-                                {cat.badge}
-                              </span>
-                            </div>
-                            <p className="text-[0.8125rem] text-[#6B665F] leading-relaxed pl-5.5">
-                              {cat.description}
-                            </p>
-                          </div>
-                        );
-                      })}
-                    </div>
+                              <AnimatePresence initial={false}>
+                                {selected && (
+                                  <motion.span
+                                    initial={{ opacity: 0, height: 0 }}
+                                    animate={{ opacity: 1, height: 'auto' }}
+                                    exit={{ opacity: 0, height: 0 }}
+                                    transition={{ duration: 0.18, ease: [0.22, 0.61, 0.36, 1] }}
+                                    className="block overflow-hidden"
+                                  >
+                                    <span className="mt-1 block text-[0.8125rem] leading-relaxed text-ink-soft">
+                                      {category.description}
+                                    </span>
+                                  </motion.span>
+                                )}
+                              </AnimatePresence>
+                            </span>
+                            <span
+                              className={`mt-1 flex h-[1.125rem] w-[1.125rem] shrink-0 items-center justify-center rounded-full border transition-colors ${
+                                selected ? 'border-brand bg-brand text-white' : 'border-line'
+                              }`}
+                              aria-hidden="true"
+                            >
+                              {selected && <Check className="h-3 w-3 stroke-[3]" />}
+                            </span>
+                          </button>
+                        </React.Fragment>
+                      );
+                    })}
                   </div>
 
-                  {/* Incident details input */}
-                  <div>
-                    <label className="block text-xs font-bold text-[#1A1816] mb-1">
-                      Specific Evidence or Context (Optional but Recommended):
-                    </label>
-                    <textarea
-                      value={details}
-                      onChange={(e) => setDetails(e.target.value)}
-                      placeholder="E.g., In messages on 17 Oct, this user repeatedly pressed for deployment dates and patrol locations despite warnings..."
-                      rows={3}
-                      className="w-full p-3 rounded-xl border border-[#E8E4DC] bg-[#FAF8F5] text-xs text-[#1A1816] placeholder-[#9EA3A0] focus:outline-none focus:border-[#B85A3C] focus:bg-white resize-none"
-                    />
+                  {/* Note stays folded away until it is wanted */}
+                  <div className="mt-3">
+                    {detailsOpen ? (
+                      <textarea
+                        autoFocus
+                        value={details}
+                        onChange={(e) => setDetails(e.target.value.slice(0, 800))}
+                        placeholder="What was said, and when?"
+                        rows={3}
+                        aria-label="Additional details"
+                        className="field resize-none py-3 text-[0.9375rem] leading-relaxed"
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setDetailsOpen(true)}
+                        className="flex w-full items-center justify-between rounded-2xl border border-dashed border-line px-4 py-3 text-left text-[0.875rem] text-ink-soft transition-colors hover:border-ink-muted hover:text-ink"
+                      >
+                        Add details <span className="text-ink-muted">Optional</span>
+                      </button>
+                    )}
                   </div>
 
-                  {/* Also Block Checkbox */}
-                  <div
-                    onClick={() => setAlsoBlock(!alsoBlock)}
-                    className="flex items-center gap-3 p-3 rounded-xl bg-[#F7F5F0] border border-[#E8E4DC] cursor-pointer hover:bg-[#F1ECE4] transition-colors"
+                  <button
+                    type="button"
+                    onClick={() => setAlsoBlock((v) => !v)}
+                    aria-pressed={alsoBlock}
+                    className="mt-3 flex w-full items-center gap-3 rounded-2xl bg-surface-subtle px-4 py-3 text-left"
                   >
-                    <div
-                      className={`w-4 h-4 rounded border flex items-center justify-center ${
-                        alsoBlock ? 'bg-[#B85A3C] border-[#B85A3C] text-white' : 'border-[#9EA3A0] bg-white'
-                      }`}
-                    >
-                      {alsoBlock && <Check className="w-3 h-3 stroke-[3]" />}
-                    </div>
-                    <div className="flex-1">
-                      <span className="text-xs font-bold text-[#1A1816]">
-                        Simultaneously block {partner.name}
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[0.875rem] font-medium text-ink">
+                        Also block {partner.name.split(' ')[0]}
                       </span>
-                      <p className="text-[0.75rem] text-[#6B665F]">
-                        They will immediately lose access to message you or view your profile.
-                      </p>
-                    </div>
-                  </div>
+                      <span className="mt-0.5 block text-[0.75rem] leading-relaxed text-ink-muted">
+                        They lose access to you and this conversation. Reversible in Settings.
+                      </span>
+                    </span>
+                    {/* The shared switch component: its knob is a literal white,
+                        which the dark-theme generator cannot invert. */}
+                    <span className={`switch ${alsoBlock ? 'switch-on' : ''}`} aria-hidden="true">
+                      <span className="switch-knob" />
+                    </span>
+                  </button>
 
-                  {/* Disclaimer banner */}
-                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[0.8125rem] flex gap-2.5 items-start">
-                    <Info className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                    <p className="leading-relaxed">
-                      <strong>OPSEC Notice:</strong> Reports are confidential. If you suspect an immediate active operational leak or physical threat, alert your Unit Provost Marshal or Security Officer immediately.
-                    </p>
-                  </div>
-                </>
-              ) : (
-                /* Block Only View */
-                <div className="space-y-4 py-2">
-                  <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 flex items-start gap-3">
-                    <UserX className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-                    <div>
-                      <h4 className="text-xs font-bold text-rose-900">
-                        Confirm Blocking {partner.name}
-                      </h4>
-                      <p className="text-[0.8125rem] text-rose-800 mt-1 leading-relaxed">
-                        Once blocked, {partner.name} cannot send messages, call, or see your profile. Your active conversation will be closed.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-[#1A1816] mb-1.5">
-                      Reason for Blocking (Private for your records):
-                    </label>
-                    <div className="space-y-1.5">
-                      {[
-                        'Safety & personal boundary preference',
-                        'Incompatible intentions or unprofessional tone',
-                        'Suspicious activity or discomfort',
-                        'No longer interested in communicating'
-                      ].map((r) => (
-                        <div
-                          key={r}
-                          onClick={() => setBlockReason(r)}
-                          className={`p-2.5 rounded-xl border text-xs cursor-pointer flex items-center justify-between ${
-                            blockReason === r
-                              ? 'border-[#1A1816] bg-[#F7F5F0] font-semibold text-[#1A1816]'
-                              : 'border-[#E8E4DC] bg-white text-[#6B665F]'
-                          }`}
-                        >
-                          <span>{r}</span>
-                          {blockReason === r && <Check className="w-4 h-4 text-[#1A1816]" />}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <p className="text-[0.8125rem] text-[#9EA3A0] italic">
-                    Note: You can review and manage your blocked contacts anytime under Settings &gt; Privacy.
+                  <p className="mt-3.5 flex items-start gap-2 text-[0.75rem] leading-relaxed text-ink-muted">
+                    <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    Reports are private. If you are in immediate danger, contact local emergency services.
                   </p>
+                </div>
+              ) : (
+                <div>
+                  <p className="text-[0.9375rem] leading-relaxed text-ink-soft">
+                    {partner.name.split(' ')[0]} will no longer be able to message you, and your profile
+                    disappears from their discovery. You can undo this from Settings.
+                  </p>
+
+                  <p className="mb-2.5 mt-5 text-[0.9375rem] font-semibold text-ink">Mind saying why?</p>
+                  <div className="flex flex-wrap gap-2">
+                    {BLOCK_REASONS.map((reason) => (
+                      <button
+                        key={reason}
+                        type="button"
+                        onClick={() => setBlockReason(reason)}
+                        aria-pressed={blockReason === reason}
+                        className={`chip min-h-0 px-3.5 py-2 text-[0.8125rem] ${
+                          blockReason === reason ? 'chip-active' : ''
+                        }`}
+                      >
+                        {reason}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-2.5 text-[0.75rem] text-ink-muted">Only you see this.</p>
                 </div>
               )}
             </div>
 
-            {/* Footer Buttons */}
-            <div className="bg-[#FAF8F5] border-t border-[#EBE6DF] p-3.5 sm:p-4 flex items-center justify-end gap-2.5">
-              <button
-                type="button"
-                onClick={onClose}
-                disabled={isSubmitting}
-                className="px-4 py-2 rounded-full border border-[#D8D2C7] bg-white hover:bg-[#F3EFEA] text-[#1A1816] text-xs font-semibold transition-colors"
-              >
-                Cancel
-              </button>
-
+            {/* One clear action; cancelling is quiet */}
+            <div className="shrink-0 border-t border-line px-5 py-4 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
               {activeTab === 'report' ? (
                 <button
                   type="button"
                   onClick={handleConfirmReport}
-                  disabled={isSubmitting}
-                  className="px-5 py-2 rounded-full bg-[#B85A3C] hover:bg-[#B04A55] text-white text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-sm"
+                  disabled={!selectedCategory || isSubmitting}
+                  className="btn btn-primary btn-block"
                 >
                   {isSubmitting ? (
-                    <Loader2 className="inline-block animate-spin mr-1 w-4 h-4" />
+                    <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <ShieldAlert className="w-3.5 h-3.5" />
+                    <ShieldAlert className="h-4 w-4" />
                   )}
-                  <span>{alsoBlock ? 'Submit Report & Block' : 'Submit Report'}</span>
+                  {alsoBlock ? 'Report and block' : 'Send report'}
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={handleConfirmBlockOnly}
                   disabled={isSubmitting}
-                  className="px-5 py-2 rounded-full bg-[#1A1816] hover:bg-black text-white text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-sm"
+                  className="btn btn-primary btn-block"
                 >
-                  {isSubmitting ? (
-                    <Loader2 className="inline-block animate-spin mr-1 w-4 h-4" />
-                  ) : (
-                    <UserX className="w-3.5 h-3.5" />
-                  )}
-                  <span>Block {partner.name}</span>
+                  {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserX className="h-4 w-4" />}
+                  Block {partner.name.split(' ')[0]}
                 </button>
               )}
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={isSubmitting}
+                className="mt-1.5 flex w-full items-center justify-center gap-1 py-2 text-[0.875rem] font-medium text-ink-muted transition-colors hover:text-ink"
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
+                Cancel
+              </button>
             </div>
           </>
         )}

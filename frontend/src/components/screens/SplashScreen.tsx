@@ -40,6 +40,9 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
           <p className="font-['Plus_Jakarta_Sans',sans-serif] text-sm text-white/80 font-normal leading-relaxed max-w-[34ch]">
             A thoughtful dating community for military, paramilitary and uniformed professionals, with privacy designed around service.
           </p>
+          <p className="font-['Space_Mono',monospace] text-[0.7rem] text-[#E8B49B] tracking-wide">
+            Join free · Start with 25 credits on us
+          </p>
         </div>
 
         <div className="flex flex-col gap-3">

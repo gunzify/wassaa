@@ -61,6 +61,8 @@ React + Vite PWA (frontend/)
 | `supabase/config.toml` | Project ref plus per-function `verify_jwt = false`. The handlers perform explicit verification; this is intentional. |
 | `scripts/deploy-supabase.mjs` | Deployment preflight, filtered secret-file creation, Edge secret upload, and function deploy. Requires credential-rotation acknowledgement and complete env values. |
 | `scripts/e2e-smoke.mjs` | Two-account live smoke test against the hosted stack (onboarding gate, drafts, location/radius, discovery, match, messaging, private realtime, block enforcement, media round-trip). Reads local env files, prints no secrets, deletes its QA users on exit. `npm run smoke` (or `node scripts/e2e-smoke.mjs`). |
+| `scripts/npc-smoke.mjs` | Persona-loop live smoke test (match → greeting → paid reply). Run after any NPC-engine or credit change; deletes its QA account on exit. |
+| `scripts/admin-smoke.mjs` | Integrity-console live smoke test: allowlist gate, verification queue (approve/reject), report + DM review context, restrict/ban/lift with member-side enforcement, appeals (grant/deny), persona editing and the audit trail. Temporarily allowlists a QA admin, then removes every row and R2 object it created. `node scripts/admin-smoke.mjs` (`--keep` leaves fixtures for inspection). |
 | `scripts/set-r2-secrets.mjs` | Uploads only the `R2_*` values from `backend/.env` as hosted Edge Function secrets via a mode-0600 temp file (values never printed, temp file removed). Run after rotating R2 credentials, then redeploy `api`. Needs the Owner/Administrator CLI login. |
 | `scripts/r2-check.mjs` | Validates the local R2 config without printing values: key presence/format, signed PUT→GET→DELETE round-trips on the private and public buckets, and an unsigned GET through `R2_PUBLIC_BASE_URL`. Test objects are removed afterwards. |
 | `backend/src/` | Legacy Express API, business logic, memory/Postgres stores, security middleware, and the old admin API. |
@@ -97,6 +99,8 @@ The visual language is **Warm Terracotta & Editorial**: restrained editorial typ
 | Verified | `#2C6B56` | General verification badge/success |
 | Danger | `#9B2C2C` | Destructive/safety actions |
 
+Every one of these values has a dark-mode twin in `frontend/src/styles/theme-dark.css`, generated from the literals the app actually uses — see §19. Keep colours in class strings so the generator can see them.
+
 Typography: Cormorant Garamond for display/editorial headings, Plus Jakarta Sans for UI/body, and Space Mono for labels/metadata. Fonts are fetched from Google Fonts in `frontend/index.html`; they are not bundled. The HTML root font size is fixed at 16px (no viewport-based clamp), so every device renders the rem scale identically. Spacing is a 4px scale; radii run from 8px to 24px with pill actions; cards use light shadows. The main content column is capped around 480px and designed mobile-first.
 
 Interaction rules (enforced in unlayered CSS in `index.css`, so they beat Tailwind's utility layer): every `button`/`[role="button"]` gets a 44px min-width/min-height floor (40px with `data-compact`), and all buttons/links carry a `scale` transition so `transition-colors` utilities on a screen cannot strip press feedback. The dock is opaque (no `backdrop-filter`), items are ~68px tall with 28px icons, and `index.html` sets `viewport-fit=cover` so `env(safe-area-inset-bottom)` lifts it above the home indicator.
@@ -116,8 +120,8 @@ Current shell screens and flows:
 | `ProfessionSelectionScreen` | Search/select a profession category; uniformed categories proceed to service selection. |
 | `ServiceSelectionScreen` | Select a uniformed-service branch; this is self-reported data. |
 | `ProfileSetupScreen` | Initial profile details and photo setup before the identity review screen. |
-| `IdentityVerificationScreen` | Choose document type, enter a document number that is masked server-side, capture/select ID and selfie images, upload privately, and submit for manual review. Continue-to-discovery does not mean verified. |
-| `RealDatingOnboardingFlow` | Ten steps: Intent; Basics; Photos; Profession; Location; About you; Lifestyle; Values; Prompts & Interests; Match Preferences. Photos require at least two in this flow; interests require at least three; lifestyle, values, and final preference step can be skipped/optional. Location is state + city; there is no implemented radius search. |
+| `IdentityVerificationScreen` | Settings entry point for manual identity review. The capture itself is `components/common/IdentityCapturePanel` — document type, a number masked server-side, private ID photo and live selfie upload, submit — shared with onboarding step 11 so both render identically. Continue-to-discovery does not mean verified. |
+| `RealDatingOnboardingFlow` | Eleven steps: Intent; Basics; Photos; Profession; Location; About you; Lifestyle; Values; Prompts & Interests; Match Preferences; Identity verification. Photos require at least two in this flow; interests require at least three; lifestyle, values and the final preference step can be skipped/optional. Step 11 is opt-in: capture both images and "Submit for review" files the submission in the admin queue, while the footer's "Finish profile" skips it and enters the app. The profile works unverified either way; its status only drives the badge. Location is state + city; there is no implemented radius search. |
 | `DiscoverScreen` | Card/photo browsing, pass, like, super-like, profile detail, filters, and deck refresh. Swipes are server-authoritative. |
 | `ProfileDetailScreen` | Expanded candidate profile and swipe actions. |
 | `MatchCelebrationScreen` | Shown after the server reports a mutual like; starts chat or returns to discovery. |
@@ -342,8 +346,16 @@ The Express service is still present and typechecked but is not the active API f
 | `VITE_SUPABASE_URL` | Public | Supabase project base URL. |
 | `VITE_SUPABASE_ANON_KEY` | Public | Supabase publishable/anon key; RLS and API authorization still required. |
 | `VITE_GOOGLE_CLIENT_ID` | Public | Google Identity Services Web OAuth client ID. |
+| `VITE_POSTHOG_KEY` | Public | PostHog project API key (`phc_…`) for product analytics. Absent = analytics is a no-op. |
+| `VITE_POSTHOG_HOST` | Public | Optional PostHog ingest host; defaults to `https://eu.i.posthog.com`. |
 
-Never put a Supabase service-role/secret key, Google OAuth client secret, Termii API key, Paystack key, webhook secret, or R2 secret in any `VITE_` variable.
+Never put a Supabase service-role/secret key, Google OAuth client secret, Termii API key, Paystack key, webhook secret, R2 secret, or a PostHog **personal** API key in any `VITE_` variable.
+
+### Product analytics (PostHog, consent-gated)
+
+`frontend/src/services/analytics.ts` wraps `posthog-js`. The SDK is not initialised and no request is made until a member turns on **Product analytics** in Settings → Trust & privacy (localStorage key `wassaa_analytics_consent_v1`; default is off). Consent can be withdrawn from the same switch, which resets the PostHog identity and opts out. The switch only renders when `VITE_POSTHOG_KEY` is present in the build.
+
+Captured events: `app_opened`, `screen_viewed` (the shell is a state machine, so each screen is captured explicitly), `sign_in_completed`, `onboarding_step_completed`, `onboarding_completed`, `like_sent`, `pass_sent`, `match_created`, `chat_opened`, `message_sent`, `store_opened`. The member is identified by profile UUID with only `onboarding_complete`, `identity_verified`, `account_status`, and `dating_goal` as person properties — no email, phone, name, photos, document numbers, coordinates, or message text. Sign-out and account deletion call `resetAnalytics()`. Session replay, autocapture, pageviews, and pageleave capture are disabled.
 
 ### Legacy local API (`backend/.env`)
 
@@ -360,7 +372,8 @@ Hosted Edge secrets are separate from local `.env`; adding a value locally does 
 **Hosted secret inventory (inspected 2026-10-25 via `supabase secrets list`, values are returned as hashes only):**
 
 - Present: `R2_ACCOUNT_ID`, `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PRIVATE_BUCKET`, `R2_PUBLIC_BUCKET`, `R2_PUBLIC_BASE_URL` (uploaded 2026-10-25), `TERMII_API_KEY`, `TERMII_SENDER_ID`, and the Supabase-managed `SUPABASE_*` keys.
-- **Missing:** `GOOGLE_CLIENT_ID` (the `/public-config` response therefore returns an empty client ID; the app relies on `VITE_GOOGLE_CLIENT_ID`), `PAYSTACK_SECRET_KEY`, `PAYSTACK_CALLBACK_URL` (billing endpoints return "Payments are not configured"), `TERMII_BASE_URL`.
+- **Fixed 2026-10-27 (Owner CLI session, project linked to `avlbsficfejvwokxkgyl`):** `GOOGLE_CLIENT_ID` and `PAYSTACK_CALLBACK_URL` were uploaded via `npx supabase secrets set --env-file <filtered temp file>` (values never printed) and are confirmed present. `/public-config` now returns the Google client ID, so the admin console renders the Google button instead of "Google Sign-In is not configured." Secrets set this way take effect at runtime — the `api` function did **not** need redeploying for `/public-config` to pick it up.
+- **Still absent:** `PAYSTACK_SECRET_KEY` is missing from `backend/.env` itself (billing endpoints keep returning "Payments are not configured" until it is added and uploaded), and `TERMII_BASE_URL` is optional/unset.
 - **`APP_ORIGINS` — superseded by request probes (2026-10-26):** the 2026-10-25 inventory listed it as missing, but live probes of the deployed `api` function show `https://wassaa.vercel.app` being echoed as `Access-Control-Allow-Origin` (200) while an unknown origin gets 403 + fallback to `https://wassaa.app` — i.e. the effective allow-list includes Vercel, so the secret is set hosted (or the deployed code was updated to include it). The inventory itself could not be re-read: `supabase secrets list` from this workspace returned 403 (insufficient privileges) on 2026-10-26; re-login with an Owner/Administrator session before the next secrets change. Verify by probing, not by assumption.
 - **Typo found:** a secret named `SEND_SMS_HOOK_SECRE` (missing final `T`, set 2026-10-24) exists. The code expects `SEND_SMS_HOOK_SECRET`, so SMS hook auth will fail until the typo'd secret is deleted and the correct name is set. Do this before enabling phone verification.
 
@@ -399,7 +412,7 @@ For the onboarding/location/chat update, root backend and frontend TypeScript ty
 
 **Live verification (2026-10-25, from this workspace):** `npm run smoke` (`scripts/e2e-smoke.mjs`) ran against the hosted project and passed **48/48 checks** with two freshly created QA accounts (deleted afterwards). It exercised: health, confirmed-email → profile bridge, password sign-in, the `ONBOARDING_REQUIRED` gate on discovery and matches, `LOCATION_REQUIRED` on radius without coordinates, draft saves reaching the gate field by field, coordinates + radius accepted, discovery returning member B with a 5 km-band distance (~70 km Lagos↔Abeokuta) and no raw coordinates, a 5 km radius excluding the distant candidate, mutual like → match, two-way API messaging, non-member match ID rejected with 404, a private realtime join receiving a broadcast that carried only message IDs (no content), block enforcement (send rejected 403 on both sides, blocked member's channel rejoin denied by `wassaa_can_access_match_topic`, unblock restores), and a full media round-trip: presign → signed PUT to R2 (200) → photo served from the public URL (200) → test object deleted (204).
 
-Deno is unavailable in the current workspace, so there is no Deno typecheck. Still not performed: browser/device UI run, geolocation permission prompts on a real device, live SMS, Paystack transactions, admin console run, or load test. Do not infer production capacity from a successful build or a smoke test.
+Deno is unavailable in the current workspace, so there is no Deno typecheck. Still not performed at that date: browser/device UI run, geolocation permission prompts on a real device, live SMS, Paystack transactions, or load test (the admin console/moderation routes were exercised later — see the 2026-10-27 run in §18). Do not infer production capacity from a successful build or a smoke test.
 
 ## 14. Known gaps and source-of-truth decisions
 
@@ -464,7 +477,9 @@ The older `docs/IMPLEMENTATION-PLAN.md`, `docs/MONETIZATION-ECONOMY.md`, and par
 - Live two-account verification (2026-10-25): `npm run smoke` → **48/48 checks passed** covering the onboarding gate, draft saves, location/radius preferences, ranked discovery with distance bands and radius exclusion, mutual match, two-way messaging, private realtime broadcast (id only), block enforcement on both the message API and channel authorization, and the full media path (presign → signed PUT → public URL → object cleanup). The script creates and deletes its own QA accounts and prints no secrets.
 - R2 hosted secrets were uploaded on 2026-10-25 with `node scripts/set-r2-secrets.mjs` after `npx supabase login` (Owner role required — see §8/§12) and the `api` function was redeployed. Use the same script after rotating R2 credentials; use `node scripts/r2-check.mjs` to validate `backend/.env` values directly against R2 without touching the cloud.
 - The radius guard: `/discovery` only forwards `radiusKm` to the RPC when the member has coordinates and the stored radius is finite and ≥ 5 (defends against `Number(null) === 0`, which would have produced an empty deck for members without location). Enforced in the API layer, so no follow-up migration was created.
-- Still unverified: browser/device UI run and geolocation permission prompts, email OTP and Google sign-in UI flows (note: `GOOGLE_CLIENT_ID` is not a hosted secret yet, §12), Paystack test webhook/transactions (secrets not hosted), `send-sms` (and the `SEND_SMS_HOOK_SECRE` typo, §12), admin console, moderation flows, and load testing. R2 media upload/download is verified (48/48 smoke run).
+- Google sign-in and the admin console sign-in are **verified end-to-end on localhost (2026-10-27)**: `http://localhost:5173/admin/index.html` obtained a Google ID token, exchanged it at `/auth/v1/token?grant_type=id_token` (200), passed the allowlist gate (`/admin/session` 200) and loaded `/verifications`, `/reports`, `/appeals`, `/threads` and `/npcs` (all 200) with the persona pool rendered. The owner row is in `public.wassaa_admin_users` (`lemyskew7@gmail.com`, display "Owner"); the deployed bundle at `wassaa.vercel.app` contains `VITE_GOOGLE_CLIENT_ID` and loads GIS, and the production console renders the button, but the popup click on that origin has not been exercised (needs the owner's Google session; the origin must be listed in the OAuth client's Authorized JavaScript origins).
+- Local console URL quirk: under the Vite dev server the SPA fallback wins for `/admin/` and shows the member app; use `http://localhost:5173/admin/index.html`. On Vercel the static file takes precedence, so `/admin/` is correct there.
+- Still unverified: device/permission-prompt runs, Paystack test webhook/transactions (`PAYSTACK_SECRET_KEY` not in `backend/.env`), `send-sms` (and the `SEND_SMS_HOOK_SECRE` typo, §12), and load testing. R2 media upload/download is verified (48/48 smoke run); the admin console and moderation flows were verified on 2026-10-27 (`scripts/admin-smoke.mjs`, §18).
 
 ## 17. Design overhaul and navigation restructure (2026-10-26)
 
@@ -494,3 +509,214 @@ Everything below is verified in the browser against the local dev server with a 
 ### QA fixtures
 
 - `scripts/qa-design-user.mjs` gained `--seed` (three male Lagos deck profiles, `qa-design-deck*` prefix) so Discover renders real cards; `--cleanup` still removes every `qa-design-*` user and profile. Reviewer deck verified at 3 cards.
+
+## 18. Expansion: taxonomy, verification, NPCs, moderation, credits (2026-10-26; implemented in source, DB applied, 300 personas seeded 2026-10-27)
+
+> Implementation status lives at the end of this section (§18G). Sections §9 (tiers) and §3 onboarding details are superseded by the credit model here. Where this text and the SQL disagree, the SQL wins.
+
+The remainder of §18A–F is the agreed design; §18G records what is actually built, what was verified, and what is still blocked.
+
+### A. Role and skill taxonomy (profiles)
+
+Top-level `class_of_service` replaces the implicit uniformed/civilian split:
+
+- `military` | `police` | `paramilitary` → require **role** ∈ `officer` | `soldier` (police/paramilitary map officer = inspector-and-above/inspectorate cadre, soldier = rank-and-file/constable cadre) and a **skill/trade** from a curated list (e.g. Nursing/Medical, Engineering, Software/IT, Logistics/Drivers, Communications/Signals, Aviation, Legal, Education, Admin/Logistics, Trades).
+- `civilian` → no officer/soldier; picks profession category + title as today (any profession list works: nurse, engineer, software engineer, trader, student, etc.).
+- Migration is additive: existing profiles keep their profession fields; `class_of_service`, `role`, `skill` land as nullable columns filled on next edit; the onboarding Profession step branches: Branch (Military/Police/Paramilitary/Civilian) → for non-civilian: service branch select → officer|soldier → skill → title; for civilian: existing category/title path.
+- Officer/soldier labels shown on the identity card as `Officer · Nursing` etc.; civilians show their title only.
+
+### B. Verification pipeline (selfie + ID → badge)
+
+1. Onboarding includes the identity step: front+back ID photo, selfie, document type + number (number masked server-side as today). Photos go to a **private** bucket path under the user; only short-lived signed URLs ever leave the API.
+2. New `verification_requests` row per submission: `pending → approved | rejected` with reviewer, timestamp, and reject reason.
+3. Admin console gets a review queue: side-by-side selfie vs ID (signed URLs), doc type/number, prior history. Approve sets `profiles.verification_status='verified'` → existing `ShieldCheck` badge lights up everywhere it is rendered.
+4. On any profile report, the reviewer re-opens the face-vs-ID pair from the account view to confirm the reporting subject still matches their ID (that is why raw photos are retained securely).
+5. NPC profiles are seeded as `verified` (they are fixtures; the flag is server-side and never distinguishes them publicly).
+
+### C. NPC population and behavior (≈300 profiles)
+
+- **Seeding:** `scripts/seed-npcs.mjs` creates ~300 auth users (`npc-…@wassaa.test`-style service markers server-side, flagged `is_npc=true`) with Nigerian names, ages 22–40, Lagos/Abuja/PH/Kano/Enugu/Ibadan locations, bios/interests/roles/skills from the §A taxonomy, 3–4 photos each (placeholder CDN initially; admin can replace with real uploaded photos via R2 from the NPC manager).
+- **Discovery priority and fade:** discovery composes each deck as *real candidates first* (existing ranking), NPCs filling the remainder. NPC share = `clamp(1 − real_candidates_in_range/30, 0.25, 1)` — with few real users the deck is mostly NPCs; as real candidates in range grow, NPC share decays to a **25% floor** and never reaches zero.
+- **Greeting:** after a mutual match, an NPC sends a randomized "hello"-style opener (cron/Edge function; delayed 5–60 min so it feels human).
+- **Reply engine:** rule/intent-based (greeting, small talk, questions about them, compliments, plans/logistics, farewell, off-topic fallback) using persona data (skill, city, interests). Replies are delayed 20–90 s before posting through the normal message path so the standard broadcast/poll delivery is unchanged.
+- **Thread state machine** (per user × NPC thread): `active` → replies while the payer has credits and the thread has daily budget; `quiet` after the free budget (≈12 NPC messages/thread/day) or at 0 credits — NPC simply stops replying; two further user messages trigger the top-up sheet; `admin_owned` after any credit purchase — auto engine detaches and the thread appears in the admin "Attending" queue where staff reply as the NPC in real time. Existing threads are never faded out: fade rules apply only to *new* NPC discovery and new greetings.
+- **Admin NPC manager:** list/search NPCs, edit persona, upload/replace photos, activate/deactivate, view per-NPC thread counts.
+
+### D. Reporting, review, and sanctions (chat + accounts)
+
+- Report targets: an **account**, a **message**, or an **image** (long-press a message bubble or image → sheet with Report). Reasons: photos/impersonation, harassment, spam/scam, underage/suspicious, other + free text.
+- Reports store reporter, target, reason, optional message reference. The admin review view assembles everything server-side: full profile (incl. verification data with face-vs-ID viewer), account dates, prior reports, and the **complete DM history between reporter and reported** (history already lives in messages).
+- Actions: **restrict** (logged in, read-only: no likes, no sends), **ban** (login blocked), **delete account** — every action requires a stored reason; the user sees the reason in-app and an **Appeal** button; appeals queue for admin re-review with a note; reinstatement clears the sanction.
+
+### E. Credit economy (replaces tier subscriptions)
+
+Decisions (profit + retention, one currency, no tier/credit mix):
+
+- **1 credit = 1 sent message**, persona or real (owner revision in `20261026000001_message_credits_everywhere.sql`, which supersedes the original "real chat is free" decision in this spec). Replies never charge the member.
+- **Signup grant: 25 credits** (welcome screen states it plainly). Plus a **daily drip of 1 credit** for returning non-payers (keeps dormant threads re-enterable for admin re-hooking).
+- **Actions:** NPC message 1 · Super Like 3 · Boost (1 h) 10 · Reveal who likes you (24 h) 15 · Undo pass 1.
+- **Paystack packs:** Quick 40 ₦300 (₦7.5/credit) · Standard 240 ₦1,500 (₦6.25/credit, "Most popular") · Premium 600 ₦3,300 (₦5.5/credit, "Best value"). Credits never expire. Existing paid tier entitlements (if any) are honored to expiry, then retired; `SubscriptionPlansScreen` becomes the credit store.
+- **Paywall moments:** sending to a quiet NPC at 0 credits; balance chip ≤ 5 turns amber; after every successful payment the user lands back in the thread with an NPC reply queued, and **all of that user's NPC threads flip to `admin_owned`** so staff continue the conversation personally.
+- Server-side: `credit_ledger` (append-only: grant, drip, purchase, spend, refund) + cached balance, checked inside the same transaction/authorization path as message send — the browser is never trusted with balances.
+
+### F. Implementation order (when the code maps land)
+
+1. Additive migration: taxonomy columns, `verification_requests`, sanctions/appeals, `is_npc` + credit tables.
+2. Edge API: credit grant/drip/spend hooks, extended Paystack webhook, NPC engine endpoints (greeting cron, reply), report/appeal endpoints, admin surface (verification queue, reports+DM view, sanctions, NPC manager, thread takeover).
+3. Frontend: onboarding taxonomy step, credit chip + store + paywall sheets, long-press report sheet, restriction banner + appeal screen, verified badge already reactive.
+4. `scripts/seed-npcs.mjs` (300 profiles) + admin NPC photo upload.
+5. Smoke/verification pass, then KB rewrite of §9 and §3 details from "spec" to "implemented + verified".
+
+### G. Implementation status (2026-10-27)
+
+**Applied to the linked project** (`avlbsficfejvwokxkgyl`), verified by direct Postgres queries from this workspace (`backend/.env` → `SUPABASE_DB_URL`):
+
+- `20261026000000_expansion.sql` and `20261026000001_message_credits_everywhere.sql` are both recorded in `supabase_migrations.schema_migrations`.
+- Columns/tables exist: taxonomy (`class_of_service`, `org_role`, `skill`), persona (`is_npc`, `npc_active`, `npc`), credits (`credits`, `last_credit_drip`, `boosted_until`, `revealed_likes_at`, `credit_ledger`), sanctions (`account_status`, `restriction_reason`, `restricted_at/by`, `appeals`), thread state (`matches.auto_state`, `auto_next_at`, `auto_spent`, `taken_over_by`), report evidence (`match_id`, `message_id`, `review_note`, `reviewed_at`).
+- RPCs present: `wassaa_send_message` (6 args), `wassaa_npc_reply`, `wassaa_grant_credit`, `wassaa_spend_credit`, `wassaa_daily_drip`, `wassaa_seed_npcs`, `wassaa_fulfill_payment`, and the 9-arg NPC-aware `wassaa_discovery`. The superseded `wassaa_npc_send_message` was dropped by 00001.
+- Welcome grant backfilled: 25 pre-existing members received a `signup_grant` ledger row.
+- Verification reuses the existing `verification_submissions` table; no `verification_requests` table was added. Review now **retains** documents in the private bucket (short-lived signed URLs only) instead of purging them.
+
+**Persona deck seeded (300)** with `node scripts/seed-npcs.mjs`: 300 rows, all `npc_active`, all `verified`, 20 cities, 95 greeters (32%). Class mix: 107 military / 45 police / 42 paramilitary / 106 civilian, with every uniformed persona carrying an `org_role`. Photos are `randomuser.me` portraits matched to gender (0 mismatches); the pool is 99 per gender, so faces repeat across the deck — these are placeholders meant to be replaced from the admin Personas screen (the script originally used random `picsum` landscapes, which read as broken profile cards). Deck composition was verified by running `wassaa_discovery` as a real Lagos member: **15 cards = 1 real + 14 personas**, real candidates first, 25% floor intact.
+
+**Deployed 2026-10-27** with the project-owner Supabase session (`supabase functions deploy api --no-verify-jwt --project-ref avlbsficfejvwokxkgyl`). The first attempt failed with **403** because the CLI was signed into an account that could not see this project (absent from `supabase projects list`; `migration list` and `secrets` also 403) — owner login was the unblock. Live proof after deploy: `GET /functions/v1/api/health` → 200 and `/billing/plans-public` now returns `free, credit_40, credit_240, credit_600` (previously it still served `premium`/`hyper_premium`). Redeploy `api` after every source change with that same command; `npm run deploy:supabase` also pushes secrets and `send-sms`, which is unnecessary for an API-only change.
+
+**Persona matching had to be fixed for the loop to exist.** `wassaa_find_or_create_match` requires a swipe in both directions and seeded personas never acted, so a member could like all 300 personas and never match one — no greeting, no conversation, nothing for credits to spend on. The `/likes` route now has the persona reciprocate a fresh like with **32% probability** (a normal `swipes` row, written server-side, never exposed in any client payload); the resulting match flows through the existing advice-locked match path, and the client cannot distinguish it from a member matching back.
+
+**Implemented in source; static checks pass, live verification below:**
+
+- Edge API (`index.ts` + `npc.ts` + `npc-content.ts`): lazy NPC engine on `/matches` and `/matches/:id/messages`, atomic spend + insert + reply-window in `wassaa_send_message`, daily drip on `/auth/session`, Super Like 3 / Boost 10 / reveal 15, credit-pack checkout and fulfillment, sanction gate (`ACCOUNT_BANNED` / `ACCOUNT_RESTRICTED`), appeals, report evidence, and admin queue/context/sanction/appeal/NPC/thread routes.
+- Frontend: onboarding officer/soldier + skill pickers, chat credit hint, credit store, locked-likes reveal, appeal screen + restriction banner, hold-to-report, and the identity step as the **final step of onboarding** (opt-in) plus the Settings entry point — both mount `components/common/IdentityCapturePanel` (2026-10-27).
+- Root `npm run typecheck` passes (backend + frontend); `npm run build` passes (existing ~510 kB chunk warning); `node scripts/check-edge.mjs` parses all four Edge modules.
+
+**Deviations from the design above** (SQL is authoritative):
+
+- Every **sent** message costs 1 credit; the "free real chat" line is retired and the store copy now says so. Replies never charge.
+- The persona reply budget is **15 lifetime replies per thread** (not 12/day). `quiet` stops auto-replies; member messages still cost a credit.
+- Greeting delay is 60–180 s, deterministic per persona (not 5–60 min); replies queue 20–90 s after a member message.
+- There is no greeting cron — the engine ticks lazily when the member loads matches or a thread, so replies appear on the client's existing polling cadence.
+- The balance chip does not turn amber at ≤5, and a completed purchase does not auto-return the member to the thread.
+
+**Live verification (2026-10-27, hosted project):**
+
+- `npm run smoke` (`scripts/e2e-smoke.mjs`) → **56 passed, 0 failed** on the final run. Covered: health, QA provisioning, onboarding gate, draft saves, location/radius, ranked discovery with **no persona markers**, mutual match, **1-credit debit on each send for both members**, id-only realtime broadcast, block enforcement on API + channel, signed R2 upload and public serve, **402 `CREDITS_NEEDED` at zero balance**, and “failed spend leaves no message behind”. Caveat: two earlier runs failed only the script's direct-S3 cleanup check (`r2DeleteObject` returned `null` while upload/serve passed), then it passed without changes — treat that helper as flaky and check for stray `smoke/` objects in the public bucket if it recurs.
+- `node scripts/npc-smoke.mjs` (new persona-loop suite; run it after any NPC-engine or credit change) → **16/16**. Live proof of the whole persona loop: QA account bridged to a profile with 25 credits (+1 daily drip = 26), 20-card discovery with no persona markers, persona match after 2 likes, **greeting posted by the persona within the 60–180 s window** ("Hi QA! Two things: hello, and…"), member send debited exactly 1 credit (26 → 25), **persona reply posted in the 20–90 s window**, and match summaries carrying no persona marker. The QA account, profile, swipes, match, messages and ledger rows were removed afterwards.
+
+- `node scripts/admin-smoke.mjs` (new; run it after any admin, moderation, verification, appeal or persona-editing change) → **83 passed, 0 failed**. Against the deployed API it proved: admin routes deployed (non-admin 403, not 404), allowlisted console session with R2 storage reported, verification queue exposing signed private ID/selfie URLs + masked document numbers, approve → profile `verified` (double-review 409), reject → note + reviewer stored, a report filed with real match/message evidence and the admin list/context returning the **full DM history with exactly the reported message flagged**, the reporter/reported account shapes incl. email and verification state, retained face-vs-ID media, status updates (invalid status 400), restrict → `ACCOUNT_RESTRICTED` on mutation with the stored reason while the session still loads, lift → mutations work again, ban → `ACCOUNT_BANNED` on discovery with the session/appeal path open, sanction validation (short reason 400, unknown action 400, non-admin 403), appeals (short note 400, duplicate `APPEAL_PENDING` 409, admin queue snapshot, non-admin decision 403, grant → account reinstated + sanction cleared, re-decision 409, deny → member reads the decision note and stays banned), persona search/edit/pause with the account detail view reflecting it, non-NPC and missing-persona refusals, photo presign (non-raster 415), signed PUT → attach → public serve, and the audit trail for every action. One transient `fetch failed` in an earlier run did not reproduce; the final run was clean.
+
+- **Onboarding verification step (2026-10-27, local browser against the hosted API):** a throwaway member seeded one step short of the final step walked `10 / 11 → 11 / 11` in the real UI. Capturing a canvas-generated ID photo and selfie through the real file inputs produced `POST /uploads/presign` ×2 → signed `PUT` ×2 into `verification/<profileId>/…` → `POST /verification/submit` **200**. The queue row read back `pending`, type `NIN`, number `********901` (masked), both media keys under the member's private prefix, `profiles.verification_status = 'pending'` — i.e. exactly what the console's Verifications tab lists. The Settings entry point (same panel) rendered its capture cards as 78 px rows with a 52 px disabled submit before capture. The QA auth user, profile, submission row and both R2 objects were removed afterwards (R2 deletes returned 204). The seed/check/cleanup harness used for this was temporary and has been deleted; rebuild it from the `scripts/admin-smoke.mjs` fixtures if it is needed again.
+
+**Still open:** click through the store and appeal UI in a browser, verify Paystack packs end to end (secrets still not hosted), fix or replace the smoke script's direct-R2 cleanup helper, and replace the persona placeholder portraits. (Hold-to-report was exercised in a browser on 2026-10-27 — see §20.) Four leftover `qa-design-*` QA auth accounts (2026-10-26, from the design-overhaul pass) remain in the hosted project; the admin-smoke run left nothing behind.
+
+## 19. Dark mode (2026-10-27)
+
+Light and dark are the same design system, not two palettes. The app expresses its colours as literal Tailwind values (`bg-[#F7F5F0]`, `text-[#1A1816]`, …), so a hand-written dark stylesheet would drift on the next new screen. Instead **`frontend/scripts/gen-dark-theme.mjs` reads the real colour classes out of `src/**/*.tsx`, maps them, and writes `frontend/src/styles/theme-dark.css`** (61 rules today, from 123 colour classes) — re-run the generator after introducing new colour literals.
+
+- **Mechanism:** every rule is scoped to `html[data-theme="dark"]`, so switching is one attribute on `<html>`. The generated sheet is imported from `index.css` after `@import "tailwindcss"`; because it is unlayered it beats Tailwind's `utilities` layer without `!important`.
+- **Tokens too:** the `@theme` variables (`--color-canvas`, `--color-surface`, `--color-line`, `--color-ink*`, `--color-brand-tint`, `--color-verified*`, `--color-danger*`) are redefined in the same block, which is what restyles the `@layer components` kit (`.card`, `.row`, `.dock`, `.toast-pill`, `.btn`) without touching TSX.
+- **Mapping rules:** near-white surfaces → `#131110` canvas / `#1c1917` surface with alpha preserved; ink text → `#f3efe9`, muted → `#b7afa6`, faint → `#8e867d`; hairlines → `#332d28`; accent **text** brightens (`#B85A3C` → `#E8916B`, green → `#7bcda6`, red → `#f08c8c`) while solid brand fills stay `#B85A3C` so white-on-brand contrast (4.6:1) is unchanged; low-alpha white overlays on photos (`bg-white/25` etc.) deliberately stay white. `#1A1816` used as a *fill* becomes `#2e2925` so light text on it still reads, and `.toast-pill` (ink fill + white text) gets an explicit raised-surface override.
+- **Preference:** `frontend/src/services/theme.ts` — `system | light | dark`, stored in `localStorage['wassaa_theme']`, applied by `initTheme()` in `main.tsx`. An inline script in `index.html` resolves the theme **before first paint** so a dark-mode member never sees a cream flash; `system` follows `prefers-color-scheme` live and the `<meta name="theme-color">` follows the resolved theme (`#131110` / `#F7F5F0`).
+- **UI:** Settings → **Appearance → Theme** (System / Light / Dark, three 56 px options, `role="radiogroup"`). It is device-local and deliberately not part of the profile, so nothing is written to the database.
+
+**Verified in-browser (2026-10-27, local dev server + hosted API, throwaway member):**
+
+- Fresh load in dark: body/canvas `rgb(19,17,16)`, cards `rgb(28,25,23)`, dock `rgb(28,25,23)`, active dock tab `#37231b` with `#E8916B` label, and **zero opaque near-white surfaces left in the whole document** (scripted sweep of every element's computed background).
+- Contrast on dark: page headline 16.4:1, settings row titles 15.3:1, row sub-copy 4.88:1 — all ≥ AA for their size.
+- Switching to Light from the Appearance control updates body/cards immediately (`#F7F5F0` / white), flips `localStorage`, and the active dock tab returns to `#F5EAE5` / `#B85A3C`; reloading keeps the choice in both directions. `npm run typecheck` and `npm run build:frontend` pass (same pre-existing ~515 kB chunk warning).
+- Not done: a real device check of the OS-level auto-switch, and a dark pass on every screen (Discover, Settings, onboarding step 11, chat, appeals verified; store/report/hold-to-report flows not yet inspected in dark).
+
+**Screens that still need the literal-class treatment:** only if the generator ever skips a class, because the value is a hex the regex does not see (e.g. a colour built inside a template string). Keep literal colours in class strings.
+
+## 20. Presentation pass: seal, report sheet, card scale, dense-surface copy (2026-10-27)
+
+Owner feedback after the dark-mode release, all presentation: the verified badge "looks AI generated"; the hold-to-report sheet is "tacky, bulky, ugly"; the Discover card is small while space goes unused; list and profile screens have dead space; the profile preview sheet turns white in dark mode; the self-photo preview crops to the top of the frame.
+
+- **Verified seal (`frontend/src/components/common/VerifiedMark.tsx`).** Rebuilt as a real trust mark: a **cusped seal** — twelve points at the rim joined by concave quadratic arcs (`Q` with the control point pulled toward the centre), which is the shape real badges use, and unlike the earlier rounded-lobe rosette it does not read as a cog. Geometry is size-aware: **12 points at ≥26px, 8 shallower points below**, the inner ring is drawn only at ≥26px, and the check thins (2.6 / 2.4 / 2.2) as the seal shrinks, because a thick check is a smudge in a 16px row. `onPhoto` keeps the white-seal-with-green-check variant and adds a soft drop shadow.
+- **Report / block sheet (`frontend/src/components/chat/BlockReportModal.tsx`).** One calm column instead of a wall of copy: every reason is a single row (icon in a tinted circle, label, radio) and **only the chosen reason prints its description**, expanding with a height animation; the note field and the block switch stay folded (`Add details — Optional`) until asked for; the person's own header names the subject; the footer is one full-width action plus a quiet `Cancel` below it. Reason copy stays profession-neutral (a nurse, a trader, a soldier) and the report keys are unchanged, so existing reports and the console are untouched.
+- **Careful with `bg-white`.** The dark-theme generator maps a bare `bg-white` to the dark surface, so anything that must stay white (a switch knob) cannot use it. The sheet now uses the shared `.switch` / `.switch-knob` component instead.
+- **Discover card (`DiscoverScreen.tsx`).** The stage was `clamp(23rem, 100dvh − 17.5rem, 40rem)`, which both capped short and overflowed short phones. It is now **`clamp(20rem, 100dvh − 14.75rem, 46rem)`** against tighter chrome (header `mb-2.5`, actions `pt-4`, 3.5rem / 3rem / 3.5rem buttons) and measures **608 px tall on a 390×844 viewport**. Card story order is name, age, seal → service line → place → hairline rule → three-line quote → five hobby chips.
+- **Service copy (`frontend/src/lib/profile-display.ts`).** Three helpers now cover three densities: `serviceLine` for the card (military = branch + cadre, `Army officer`; when the branch is unknown, `Armed forces · soldier`), `serviceShort` for rows and grid tiles (`Army`, `Police`, job title — one or two words so nothing truncates), and `affiliationLine` for detail surfaces. `shortAffiliation` was removed as dead. Cadre wording is commissioned / non-commissioned; **rank is never displayed anywhere**.
+- **Dense surfaces.** Matches / Messages rows: 60px avatars, `py-4`, name at 1.0625rem, divider inset 5.5rem, and the suggestion rail's tiles grew to 8rem with the seal on them. Profile identity card restructured: avatar row, then the status pills (verify / credits / photo count) on their own full-width row, which stopped the name wrapping and left no pill stranded on its own line.
+- **Profile preview sheet.** Was hard-coded `bg-[#F7F5F0]` / `border-[#E8E4DC]` / `text-[#1A1816]` — the white block members saw in dark mode. It now uses design tokens (`bg-surface`, `border-line`, `text-ink*`, `t-section`) and its hero shows the **whole frame** (`object-contain` on a near-black stage) instead of cropping to `object-[50%_28%]`, so a self preview can never show only the top of a portrait. Grid thumbnails and card crops moved 28–30% → 32%, which is where faces sit in a 3:4 frame.
+
+**Verified in-browser (2026-10-27, local dev server + hosted API, dark and light):**
+
+- Seal rendered at 16 / 21 / 26 / 40 / 96 px — clean scallop and readable check at every size; the 24-unit seal is a blur only with the old 12-point geometry, which is why the point count is size-aware.
+- Discover card 608×334 on a 390×844 viewport; story reads `Ify Nwankwo, 23` + seal, `ARMED FORCES · SOLDIER`, `Ikeja, Lagos`, quote, five hobby chips.
+- A conversation renders with **no dock** (`showTabs` excludes `chat`); the header menu and a real long-press on a received bubble both open the new sheet, and selecting a reason reveals exactly one description and enables `Report and block`.
+- Photo viewer: simulated pointer swipes moved `2 / 3 → 1 / 3 → 2 / 3`; while open `body` is `position: fixed`, and after closing it returns to `static` with `scrollY` restored to 200 (the position the member left).
+- Preview sheet image computes `object-fit: contain`; Profile / Matches / Explore were reviewed in dark, and Discover / Profile / the report sheet in light.
+- `npm run typecheck` and `npm run build` (frontend) pass — same pre-existing ~530 kB chunk warning.
+
+**Not done here:** the deployed bundle was not redeployed, so `wassaa.vercel.app` still serves the previous build; the admin console was untouched; the store and appeal screens have not had the dark/space review; no physical-device check.
+
+## 21. One profile contract for members and personas (2026-10-29)
+
+The member app and the seeded persona deck were carrying different field sets. Auditing the write path (`updateProfile` → `PATCH /me/profile` → `profileForViewer`) against the read path (`ProfileDetailScreen`) turned up **four fields that were collected, sometimes rendered, and never stored**: conversation prompts, lifestyle, values & family, and education / alma mater. The profile screen printed `almaMater` and the detail screen rendered all four, but no column, no PATCH field and no serializer existed — so a member could type them, see "Profile saved", and lose them on reload. Personas kept their prompts inside the `npc` JSON blob, which is why they looked richer than real people.
+
+### The durable list (single source of truth)
+
+| Layer | Fields |
+| --- | --- |
+| Identity | `name`, `birth_date` (→ age), `gender`, `pronouns`, `photos[]` |
+| Work | `profession_category`, `profession_title`, `class_of_service` (derived), `service`, `org_role` (cadre), `skill`, `company_or_org`, `duty_station`, `education_level`, `alma_mater` |
+| Place | `city`, `state`, `location_lat/lng` |
+| Story | `bio`, `interests[]`, `prompts[]` (`{id,question,answer}` ×3) |
+| Detail | `lifestyle` (`exercise`,`drinking`,`smoking`,`pets`), `values_family` (`faith`,`faithImportance`,`familyPlans`) |
+| Intent | `dating_goal`, `match_preferences` |
+| Trust | `verification_status`, `verified_at`, `privacy`, `account_status` |
+| System | `credits`, `is_npc`, `npc`, `npc_active`, `created_at` |
+
+Rank is **not** in the contract: `rank` is gone from the PATCH map and from `profileForViewer`; cadre (`org_role` = officer / soldier) carries that meaning, and the seed corpus no longer uses rank titles as job titles.
+
+### What changed
+
+- **`supabase/migrations/20261029000000_profile_detail_standard.sql`** — adds `prompts jsonb not null default '[]'`, `lifestyle jsonb`, `values_family jsonb`, `education_level text`, `alma_mater text`; backfills legacy `npc.prompts` (`{q,a}`) into `prompts` (`{id,question,answer}`, capped at 3); and rewrites `wassaa_seed_npcs` so personas land in the same columns.
+- **Edge API (`supabase/functions/api/index.ts`)** — one validator per block (`cleanPrompts`, `cleanLifestyle`, `cleanValuesFamily`) applied to both `PATCH /me/profile` and `PATCH /admin/npcs/:id`; `profileForViewer` now returns `lifestyle`, `values`, `educationLevel`, `almaMater` for everyone, preferring the column and falling back to the persona blob for old rows.
+- **Admin console (`frontend/public/admin/app.js`)** — the persona sheet edits the whole contract: identity (name, date of birth, gender, pronouns), work (category, title, employer, service, cadre, trade, duty station, education, school), profile (city, state, interests, bio, intention), lifestyle, values, three prompt rows, verification state, greeter and active. Category changes re-derive `class_of_service`; a civilian cannot keep a cadre.
+- **Client (`frontend/src/services/api.ts`)** — `updateProfile` sends `prompts`, `lifestyle`, `values`, `educationLevel`, `almaMater`; `ClientProfile`/`toUserProfile` map them back.
+- **Onboarding (`RealDatingOnboardingFlow.tsx`)** — steps 7, 8 and 9 now persist on `goNext`, not only at the final submit, so closing the app mid-flow no longer discards them.
+- **Seed (`scripts/seed-npcs.mjs`, `scripts/npc-corpus.mjs`)** — personas get pronouns, prompts, lifestyle and values in the standard shape; `--backfill` fills existing personas deterministically without touching edited ones.
+
+### Deployment order
+
+Apply the migration before deploying the Edge function (the admin list selects the new columns), then ship the frontend/admin bundle. `node scripts/seed-npcs.mjs --backfill` fills personas seeded before this change.
+
+### Verified
+
+`node scripts/check-edge.mjs`, `tsc -p scripts/tsconfig.edge.json` (edge, strict), `tsc --noEmit` and `vite build` (frontend), `node --check` on the admin bundle and the seed script all pass. The migration has **not** been applied to the hosted project and the Edge function has not been deployed; no browser pass was run against the new columns. Docker was unavailable, so the SQL was not executed against a local Postgres.
+
+## 22. Nigerian naming rule for personas (2026-10-29)
+
+The persona deck composed first and last names independently from one flat pool, which produced impossible pairs — `Chukwuemeka Bello` (Igbo given name, Hausa surname), `Aisha Okonkwo`, `Dele Bello`, `Ngozi Ogundele`. Roughly **half the deck** was affected (148 of 300 in a dry run).
+
+**The rule, now enforced in code (`scripts/npc-corpus.mjs`):**
+
+- Names are tagged by tradition: **Yoruba, Igbo, Hausa, Tiv, Efik/Ibibio, Edo**, plus a separate **English/Christian** given-name pool and an **English** surname pool.
+- A tribal given name takes a surname from **the same** pool. `Chidi Nnaji`, `Zainab Danladi`, `Mfon Edet`, `Terna Iorapuu`.
+- An English/Christian given name (`Emmanuel`, `Grace`, `Joy`, `Victor`) may take **any** Nigerian surname, English included. `Christian Nwogu`, `Joy Oyelowo`, `Grace Ekpo`.
+- The surname may not repeat the given name.
+- `GIVEN_NAMES`, `FAMILY_NAMES`, `ENGLISH_GIVEN`, `buildName(rng, gender)`, `givenOriginOf()`, `familyOriginsOf()` are the only public name API. `FIRST_NAMES` / `SURNAMES` are gone; nothing may pick a first and last name independently again.
+
+**Existing personas:** `node scripts/seed-npcs.mjs --fix-names` repairs only rows where the given name is a known tribal name and the surname belongs to a *different* known pool. English given names and surnames outside the corpus are left alone, so manual admin edits survive. `--dry-run` lists every proposed rename first. Dry run on the live deck: 148 of 300 names would change.
+
+**Verified:** 20,000 generated names checked against the rule — zero violations; `node --check` on the seed script; sample output inspected for natural pairs.
+
+## 23. Applied to hosted (2026-10-29)
+
+`supabase db push` applied `20261029000000_profile_detail_standard.sql` to `avlbsficfejvwokxkgyl` (one pending migration, exit 0). The Edge Function was then deployed from the project-owner account, and the frontend to `wassaa.vercel.app` (`vercel --prod frontend`, 13 s, Ready; the served `/admin/app.js` is byte-identical to the local file).
+
+**Data passes**
+
+- `node scripts/seed-npcs.mjs --backfill` — all **300** personas now carry `prompts`, `lifestyle` (4 keys) and `values_family` (3 keys). Two follow-up passes were needed: the first used signed `>>` on a 32-bit hash, which produced negative indices for roughly half the ids, so 80 rows landed as `{}` and 72 as partial objects. The filter now treats a block with any missing key as absent, and the indices use `>>>`.
+- `node scripts/seed-npcs.mjs --fix-names` — **201 names** repaired across five passes (148 mixed-tradition, 26 retired/unclassified surnames, 7 orphans after adding `Adebayo`/`Kalu`/`Ogbeide`/`Ogundana`/`Haladu` to their real pools, 17 given names that had been unclassified — `Tosin`, `Oluwakemi`, `Ayo`, `Ladi`, `Haliru`, `Ikpe`, `Festus`, `Rosemary`, `Mariam` were added — and 3 `Ekong` surname-as-given-name rebuilds). `RETIRED_FAMILY_NAMES` (`Arigidi`, `Tiwah`, `Mbaku`) and `RETIRED_GIVEN_NAMES` (`Ekong`) force a full rebuild rather than a swap.
+
+Final live audit over all 300 personas: **mixed 0, retired 0, unclassified-given-with-tribal-surname 0, detail-complete 300**.
+
+**Live verification after deployment**
+
+- `node scripts/e2e-smoke.mjs` — **56 passed, 0 failed** (onboarding gate, discovery, match, two-way chat, credits/paywall, realtime, blocks, R2 upload round-trip, cleanup).
+- Profile round-trip against the deployed API with a throwaway QA account: `PATCH /me/profile` and `GET /me/profile` both return `prompts`, `lifestyle`, `values`, `educationLevel`, `almaMater`, and no `rank` — **9/9 checks passed**, QA user deleted.
+- Admin check with a temporary `wassaa_admin_users` grant: `GET /admin/npcs` returns `prompts`, `lifestyle`, `values`, `birthDate`, `educationLevel`, `almaMater`, `pronouns`, `companyOrOrg`, `dutyStation` — grant and user removed.
+
+**Note for future agents:** the `supabase` CLI on this machine is authenticated as an account that does *not* belong to `avlbsficfejvwokxkgyl` (it 403s on `functions` and does not list the project). `db push` works only because `backend/.env` holds the Postgres password; function deploys must be run by the owner.

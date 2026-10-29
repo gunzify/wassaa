@@ -24,7 +24,6 @@ export type VisibilitySetting = 'public' | 'matches' | 'private';
 
 export interface UserPrivacySettings {
   serviceVisibility: VisibilitySetting;
-  rankVisibility: VisibilitySetting;
   verificationDisplay: 'badge' | 'service_badge' | 'minimal';
   chatNotifications: boolean;
   twoFactorAuth: boolean;
@@ -84,7 +83,7 @@ export interface UserProfile {
   educationLevel?: string;
   almaMater?: string;
   service?: UniformedService;
-  rank?: string;
+  /** Cadre only — rank titles are never requested or displayed. */
   dutyStation?: string;
   city: string;
   state: string;
@@ -103,6 +102,16 @@ export interface UserProfile {
   lifestyle?: LifestyleHabits;
   values?: ValuesAndFamily;
   prompts?: ProfilePrompt[];
+  /** KB §18A: 'military' | 'police' | 'paramilitary' | 'civilian', derived from professionCategory. */
+  classOfService?: 'military' | 'police' | 'paramilitary' | 'civilian';
+  /** Uniformed role inside the class of service (officer or soldier). */
+  orgRole?: 'officer' | 'soldier';
+  /** Chosen trade/skill (e.g. "Nursing / Medical", "Civil / Structural Engineering"). */
+  skill?: string;
+  /** Signed-in member only: credit balance and any account sanction. */
+  credits?: number;
+  accountStatus?: 'active' | 'restricted' | 'banned';
+  restrictionReason?: string;
   verification: VerificationData;
   privacy: UserPrivacySettings;
 }
@@ -137,6 +146,17 @@ export interface MatchItem {
 }
 
 export type SubscriptionTier = 'free' | 'premium' | 'hyper_premium';
+
+/** KB §18E credit packs — the app's purchasable unit (1 credit = 1 NPC message). */
+export interface CreditPack {
+  id: string;
+  name: string;
+  tagline: string;
+  priceNgn: number;
+  credits: number;
+  features: string[];
+  isPopular?: boolean;
+}
 
 export interface SubscriptionPlan {
   id: SubscriptionTier;

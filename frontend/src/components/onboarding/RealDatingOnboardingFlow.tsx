@@ -19,6 +19,9 @@ import {
 } from '../../types';
 import { WassaaApi } from '../../services/api';
 import { preparePhoto } from '../../services/media';
+import { track } from '../../services/analytics';
+import { ORG_ROLES, skillsForCategory } from '../../constants/career';
+import { IdentityCapturePanel } from '../common/IdentityCapturePanel';
 
 interface RealDatingOnboardingFlowProps {
   initialUser?: UserProfile;
@@ -91,9 +94,16 @@ const FAITH_OPTIONS = [
   'Christianity', 'Islam', 'Traditional', 'Spiritual', 'Agnostic', 'Other', 'Prefer not to say',
 ];
 
+// Role/skill taxonomy (officer/soldier + trade) lives in constants/career.
+
 // â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-const STEP_COUNT = 10;
+const STEP_COUNT = 11;
+// Analytics labels only — no member data. Keeps the onboarding funnel readable.
+const STEP_NAMES = [
+  'intent', 'basics', 'photos', 'profession', 'location',
+  'about', 'lifestyle', 'values', 'interests', 'preferences', 'verification',
+] as const;
 const resumeStep = (user?: UserProfile): number => {
   if (!user?.datingGoal) return 1;
   if (!user.name || user.name === 'New member' || !user.birthDate || !user.gender) return 2;
@@ -134,6 +144,8 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
   const [professionCategory, setProfessionCategory] = useState<ProfessionCategory | ''>(initialUser?.professionCategory || '');
   const [professionTitle, setProfessionTitle] = useState(initialUser?.professionTitle || '');
   const [service, setService] = useState<UniformedService | ''>(initialUser?.service || '');
+  const [orgRole, setOrgRole] = useState<'officer' | 'soldier' | ''>(initialUser?.orgRole || '');
+  const [skill, setSkill] = useState(initialUser?.skill || '');
   const [companyOrOrg, setCompanyOrOrg] = useState(initialUser?.companyOrOrg || '');
 
   // Step 5 â€” Location
@@ -174,6 +186,11 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
   const [savingStep, setSavingStep] = useState(false);
   const [saveError, setSaveError] = useState('');
 
+  // Step 11 — Identity verification (optional)
+  const [verificationStatus, setVerificationStatus] = useState<'not_started' | 'pending' | 'verified' | 'rejected'>(
+    initialUser?.verification?.status || 'not_started'
+  );
+
   const requestPreciseLocation = () => {
     if (!navigator.geolocation) {
       setLocationMessage('This browser cannot provide device location. You can still use city and state.');
@@ -211,7 +228,8 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
       case 7: return true; // lifestyle is optional
       case 8: return true; // values are optional
       case 9: return interests.length >= 3;
-      case 10: return true;
+      case 10: return true; // preferences have usable defaults
+      case 11: return true; // identity verification is optional
       default: return false;
     }
   };
@@ -226,14 +244,22 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
       professionCategory: professionCategory as ProfessionCategory,
       professionTitle: professionTitle.trim(),
       service: (isUniformedCategory(professionCategory as ProfessionCategory) && service ? service : undefined) as UniformedService | undefined,
+      orgRole: (isUniformedCategory(professionCategory as ProfessionCategory) && orgRole ? orgRole : undefined) as 'officer' | 'soldier' | undefined,
+      skill: skill || undefined,
       companyOrOrg: companyOrOrg.trim() || undefined,
+      educationLevel: educationLevel || undefined,
+      almaMater: almaMater.trim() || undefined,
     });
     if (step === 5) {
       await WassaaApi.updateProfile({ city: city.trim(), state });
       if (locationCoordinates) await WassaaApi.updateLocation(locationCoordinates);
     }
     if (step === 6) await WassaaApi.updateProfile({ bio: bio.trim() });
-    if (step === 9) await WassaaApi.updateProfile({ interests });
+    // Steps 7–9 used to live only in component state, so anything typed there
+    // vanished if the member closed the app before the final step.
+    if (step === 7) await WassaaApi.updateProfile({ lifestyle: { exercise, drinking, smoking, pets } });
+    if (step === 8) await WassaaApi.updateProfile({ values: { faith: faith || undefined, faithImportance, familyPlans } });
+    if (step === 9) await WassaaApi.updateProfile({ interests, prompts });
     if (step === 10) await WassaaApi.updatePreferences({
       gender: prefGender, minAge: prefMinAge, maxAge: prefMaxAge,
       ...(distanceEnabled && (locationCoordinates || initialUser?.hasPreciseLocation) ? { maxDistanceKm } : {}),
@@ -249,6 +275,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
     setSaveError('');
     try {
       await saveCurrentStep();
+      track('onboarding_step_completed', { step, step_name: STEP_NAMES[step - 1] });
       if (step < STEP_COUNT) setStep(step + 1);
       else handleComplete();
     } catch (error) {
@@ -281,6 +308,8 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
       professionTitle: professionTitle.trim(),
       companyOrOrg: companyOrOrg.trim() || undefined,
       service: (isUniformedCategory(professionCategory as ProfessionCategory) && service) ? service as UniformedService : undefined,
+      orgRole: (isUniformedCategory(professionCategory as ProfessionCategory) && orgRole) ? orgRole : undefined,
+      skill: skill || undefined,
       educationLevel: educationLevel || undefined,
       almaMater: almaMater.trim() || undefined,
       city: city.trim(),
@@ -295,10 +324,12 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
       lifestyle: { exercise, drinking, smoking, pets },
       values: { faith: faith || undefined, faithImportance, familyPlans },
       prompts,
-      verification: initialUser?.verification || { status: 'not_started', hasGovernmentId: false, hasLiveSelfie: false },
+      verification: {
+        ...(initialUser?.verification || { status: 'not_started', hasGovernmentId: false, hasLiveSelfie: false }),
+        status: verificationStatus,
+      },
       privacy: initialUser?.privacy || {
         serviceVisibility: 'matches',
-        rankVisibility: 'matches',
         verificationDisplay: 'badge',
         chatNotifications: true,
         twoFactorAuth: false,
@@ -516,7 +547,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
             {PROFESSION_CATEGORIES.map(({ value, label }) => (
               <button
                 key={value}
-                onClick={() => { setProfessionCategory(value); if (!isUniformedCategory(value)) setService(''); }}
+                onClick={() => { setProfessionCategory(value); if (!isUniformedCategory(value)) { setService(''); setOrgRole(''); } setSkill(''); }}
                 className={`py-2.5 px-3 rounded-xl border text-xs font-medium text-left transition-all ${
                   professionCategory === value
                     ? 'border-[#B85A3C] bg-[#F5EAE5] text-[#1A1816]'
@@ -548,6 +579,52 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
                   }`}
                 >
                   {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {professionCategory && isUniformedCategory(professionCategory) && (
+          <div>
+            <label className="block text-xs font-semibold text-[#1A1816] uppercase tracking-wider font-['Space_Mono',monospace]">Cadre</label>
+            <p className="mb-2 mt-1 text-[0.75rem] leading-relaxed text-[#6B665F]">
+              WASSAA never shows rank — only whether you are commissioned or non-commissioned.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {ORG_ROLES.map(({ value, label, desc }) => (
+                <button
+                  key={value}
+                  onClick={() => setOrgRole(value)}
+                  className={`py-2.5 px-3 rounded-xl border text-left transition-all ${
+                    orgRole === value
+                      ? 'border-[#B85A3C] bg-[#F5EAE5] text-[#1A1816]'
+                      : 'border-[#E8E4DC] bg-white text-[#6B665F] hover:border-[#B85A3C]/30'
+                  }`}
+                >
+                  <span className="block text-xs font-medium">{label}</span>
+                  <span className="block text-[0.7rem] text-[#9C958D] mt-0.5">{desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {professionCategory && (
+          <div>
+            <label className="block text-xs font-semibold text-[#1A1816] mb-2 uppercase tracking-wider font-['Space_Mono',monospace]">Skill / Trade <span className="text-[#9C958D] normal-case">(optional)</span></label>
+            <div className="flex flex-wrap gap-2">
+              {skillsForCategory(professionCategory).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSkill(skill === s ? '' : s)}
+                  className={`px-3 py-2 rounded-xl border text-xs font-medium transition-all ${
+                    skill === s
+                      ? 'border-[#B85A3C] bg-[#F5EAE5] text-[#1A1816]'
+                      : 'border-[#E8E4DC] bg-white text-[#6B665F] hover:border-[#B85A3C]/30'
+                  }`}
+                >
+                  {s}
                 </button>
               ))}
             </div>
@@ -934,6 +1011,20 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
           ) : null}
         </div>
       </div>
+    </>
+  );
+
+  // STEP 11: Identity verification (optional)
+  if (step === 11) return (
+    <>
+      {heading("Verify your identity", "A live selfie plus a government ID. A human reviewer compares the two, usually within 24 hours.")}
+      <IdentityCapturePanel
+        status={verificationStatus === 'verified' ? 'verified' : verificationStatus === 'pending' ? 'pending' : 'not_started'}
+        onSubmitted={() => setVerificationStatus('pending')}
+      />
+      <p className="mt-4 text-center text-xs leading-relaxed text-[#9C958D]">
+        Optional — you can skip this and verify anytime from Settings.
+      </p>
     </>
   );
 

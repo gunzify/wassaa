@@ -96,7 +96,9 @@ main { padding: 20px; max-width: 1180px; margin: 0 auto; }
 
 .decision { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 18px; align-items: center; }
 .decision input { flex: 1 1 240px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 12px; font: inherit; background: #fdfcf9; }
-.decision input:focus { outline: 2px solid rgba(184, 90, 60, 0.3); border-color: var(--brand); }
+.decision input:focus, .decision select:focus, .decision textarea:focus { outline: 2px solid rgba(184, 90, 60, 0.3); border-color: var(--brand); }
+.decision select, .decision textarea { flex: 1 1 240px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 12px; font: inherit; background: #fdfcf9; color: inherit; }
+.decision textarea { resize: vertical; min-height: 74px; line-height: 1.45; }
 
 /* ---------- reports ---------- */
 .report-body { padding: 14px 18px; display: grid; gap: 10px; }

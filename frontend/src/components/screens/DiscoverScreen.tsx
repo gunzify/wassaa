@@ -1,39 +1,52 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence, useMotionValue, useTransform } from 'motion/react';
-import { 
-  Heart, 
-  X, 
-  Star, 
-  Info,
+import React, { useLayoutEffect, useEffect, useRef, useState } from 'react';
+import { motion, animate, useMotionValue, useTransform } from 'motion/react';
+import {
+  Heart,
+  X,
+  Star,
   SlidersHorizontal,
   MapPin,
-  RotateCcw
+  RotateCcw,
+  Coins,
+  Maximize2
 } from 'lucide-react';
 import { UserProfile } from '../../types';
+import { VerifiedMark } from '../common/VerifiedMark';
+import {
+  serviceLine,
+  locationLine,
+  quoteLine,
+  interestChips,
+  nameLine
+} from '../../lib/profile-display';
 
 interface DiscoverScreenProps {
   currentProfile: UserProfile | undefined;
   nextProfile?: UserProfile | undefined;
+  /** Current credit balance shown in the top bar (KB §18E). */
+  credits?: number;
   onSwipeLeft: (profile: UserProfile) => void;
   onSwipeRight: (profile: UserProfile) => void;
   onSuperLike: (profile: UserProfile) => void;
   onOpenProfile: (profile: UserProfile) => void;
   onOpenFilter: () => void;
+  onOpenStore: () => void;
   onResetDeck: () => void;
 }
 
 export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
   currentProfile,
   nextProfile,
+  credits,
   onSwipeLeft,
   onSwipeRight,
   onSuperLike,
   onOpenProfile,
   onOpenFilter,
+  onOpenStore,
   onResetDeck
 }) => {
   const [exitDirection, setExitDirection] = useState<'left' | 'right' | 'up' | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
 
   useEffect(() => {
@@ -42,171 +55,190 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
 
   const x = useMotionValue(0);
   const y = useMotionValue(0);
-  const rotate = useTransform(x, [-260, 260], [-18, 18]);
-  const activeCardScale = useTransform(x, [-260, 0, 260], [0.97, 1, 0.97]);
+  const cardOpacity = useMotionValue(1);
+  const rotate = useTransform(x, [-280, 280], [-12, 12]);
 
-  const likeOpacity = useTransform(x, [25, 90], [0, 1]);
-  const likeScale = useTransform(x, [25, 90], [0.8, 1.06]);
-  const likeRotate = useTransform(x, [25, 90], [-8, -14]);
+  const likeOpacity = useTransform(x, [20, 80], [0, 1]);
+  const likeScale = useTransform(x, [20, 80], [0.82, 1.04]);
+  const likeRotate = useTransform(x, [20, 80], [-5, -10]);
 
-  const nopeOpacity = useTransform(x, [-25, -90], [0, 1]);
-  const nopeScale = useTransform(x, [-25, -90], [0.8, 1.06]);
-  const nopeRotate = useTransform(x, [-25, -90], [8, 14]);
+  const nopeOpacity = useTransform(x, [-20, -80], [0, 1]);
+  const nopeScale = useTransform(x, [-20, -80], [0.82, 1.04]);
+  const nopeRotate = useTransform(x, [-20, -80], [5, 10]);
 
-  const superLikeOpacity = useTransform(y, [-20, -85], [0, 1]);
-  const superLikeScale = useTransform(y, [-20, -85], [0.8, 1.1]);
+  // A flick needs less travel than a slow drag, so the deck answers the same
+  // gesture whether it was thrown or pushed.
+  const SWIPE_TRAVEL = 78;
+  const SWIPE_FLICK = 0.22;
 
-  const nextCardScale = useTransform(x, [-220, 0, 220], [1, 0.94, 1]);
-  const nextCardY = useTransform(x, [-220, 0, 220], [0, 14, 0]);
-  const nextCardOpacity = useTransform(x, [-220, 0, 220], [1, 0.65, 1]);
+  const superLikeOpacity = useTransform(y, [-16, -76], [0, 1]);
+  const superLikeScale = useTransform(y, [-16, -76], [0.82, 1.04]);
 
-  const handleDragEnd = (_: any, info: { offset: { x: number; y: number }; velocity: { x: number; y: number } }) => {
-    setIsDragging(false);
+  const nextCardScale = useTransform(x, [-220, 0, 220], [1, 0.95, 1]);
+  const nextCardY = useTransform(x, [-220, 0, 220], [0, 12, 0]);
+  const nextCardOpacity = useTransform(x, [-220, 0, 220], [1, 0.7, 1]);
+
+  // A photo-zone tap must never fire straight after a real drag.
+  const suppressTapUntil = useRef(0);
+  const pointerStart = useRef<{ x: number; y: number } | null>(null);
+
+  // Reset before paint so the next card never flashes at the previous card's
+  // flung-off position. Animating motion values directly (instead of relying on
+  // AnimatePresence to swap keyed children) keeps the handoff frame-perfect.
+  useLayoutEffect(() => {
+    // The outgoing card's animation may still be in flight when the next
+    // profile renders; stop it before resetting, or it lands the fresh card on
+    // the old exit transform.
+    x.stop();
+    y.stop();
+    cardOpacity.stop();
+    x.set(0);
+    y.set(0);
+    cardOpacity.set(1);
+    setExitDirection(null);
+  }, [currentProfile?.id, x, y, cardOpacity]);
+
+  const settleDeck = (direction: 'left' | 'right' | 'up') => {
+    if (!currentProfile || exitDirection) return;
+    setExitDirection(direction);
+    const ease = [0.22, 0.61, 0.36, 1] as const;
+    animate(x, direction === 'left' ? -520 : direction === 'right' ? 520 : 0, { duration: 0.24, ease });
+    animate(y, direction === 'up' ? -520 : 0, { duration: 0.24, ease });
+    animate(cardOpacity, 0, { duration: 0.22, ease });
+    window.setTimeout(() => {
+      if (direction === 'left') onSwipeLeft(currentProfile);
+      if (direction === 'right') onSwipeRight(currentProfile);
+      if (direction === 'up') onSuperLike(currentProfile);
+      setExitDirection(null);
+    }, 245);
+  };
+
+  const handleDragEnd = (_: unknown, info: { offset: { x: number; y: number }; velocity: { x: number; y: number } }) => {
+    suppressTapUntil.current = Date.now() + 260;
     if (!currentProfile || exitDirection) return;
 
-    const thresholdX = 85;
-    const velocityX = 350;
-    const thresholdY = -90;
-    const velocityY = -350;
+    const travelX = info.offset.x + info.velocity.x * SWIPE_FLICK;
+    const travelY = info.offset.y + info.velocity.y * SWIPE_FLICK;
 
-    if (info.offset.y < thresholdY || info.velocity.y < velocityY) {
-      if (Math.abs(info.offset.x) < 110) {
-        setExitDirection('up');
-        setTimeout(() => { onSuperLike(currentProfile); setExitDirection(null); }, 220);
-        return;
-      }
+    if (travelY < -100 && Math.abs(info.offset.x) < Math.abs(info.offset.y)) {
+      settleDeck('up');
+      return;
     }
-
-    if (info.offset.x > thresholdX || info.velocity.x > velocityX) {
-      setExitDirection('right');
-      setTimeout(() => { onSwipeRight(currentProfile); setExitDirection(null); }, 220);
+    if (travelX > SWIPE_TRAVEL) {
+      settleDeck('right');
+      return;
+    }
+    if (travelX < -SWIPE_TRAVEL) {
+      settleDeck('left');
       return;
     }
 
-    if (info.offset.x < -thresholdX || info.velocity.x < -velocityX) {
-      setExitDirection('left');
-      setTimeout(() => { onSwipeLeft(currentProfile); setExitDirection(null); }, 220);
-      return;
-    }
+    // Under threshold: spring home instead of leaving the card half-offset.
+    animate(x, 0, { type: 'spring', stiffness: 480, damping: 34 });
+    animate(y, 0, { type: 'spring', stiffness: 480, damping: 34 });
   };
 
-  const triggerSwipeRight = () => {
-    if (!currentProfile || exitDirection) return;
-    setExitDirection('right');
-    setTimeout(() => { onSwipeRight(currentProfile); setExitDirection(null); }, 220);
+  const canCyclePhotos = () => {
+    if (!currentProfile || currentProfile.photos.length < 2) return false;
+    return Date.now() >= suppressTapUntil.current;
   };
 
-  const triggerSwipeLeft = () => {
-    if (!currentProfile || exitDirection) return;
-    setExitDirection('left');
-    setTimeout(() => { onSwipeLeft(currentProfile); setExitDirection(null); }, 220);
+  const showPrevPhoto = () => {
+    if (!canCyclePhotos()) return;
+    setCurrentPhotoIndex((i) => (i > 0 ? i - 1 : currentProfile!.photos.length - 1));
   };
 
-  const triggerSuperLike = () => {
-    if (!currentProfile || exitDirection) return;
-    setExitDirection('up');
-    setTimeout(() => { onSuperLike(currentProfile); setExitDirection(null); }, 220);
-  };
-
-  const handleNextPhoto = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (currentProfile && currentPhotoIndex < currentProfile.photos.length - 1) {
-      setCurrentPhotoIndex((prev) => prev + 1);
-    }
-  };
-
-  const handlePrevPhoto = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (currentPhotoIndex > 0) {
-      setCurrentPhotoIndex((prev) => prev - 1);
-    }
+  const showNextPhoto = () => {
+    if (!canCyclePhotos()) return;
+    setCurrentPhotoIndex((i) => (i + 1) % currentProfile!.photos.length);
   };
 
   const photosCount = currentProfile?.photos.length || 0;
+  const hobbies = currentProfile ? interestChips(currentProfile, 5) : [];
 
   return (
-    <div className="w-full flex flex-col select-none">
-      {/* Minimal top bar */}
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="font-['Cormorant_Garamond',serif] font-semibold text-2xl text-[#1A1816]">
-          Discover
-        </h1>
-        <button
-          onClick={onOpenFilter}
-          className="w-11 h-11 flex items-center justify-center rounded-xl bg-white border border-[#E8E4DC] text-[#6B665F] hover:text-[#1A1816]"
-          title="Filters"
-          aria-label="Discovery filters"
-        >
-          <SlidersHorizontal className="w-5 h-5" />
-        </button>
+    <div className="flex w-full select-none flex-col">
+      {/* Top bar: credits live here, not in the dock */}
+      <div className="mb-2.5 flex items-center justify-between">
+        <h1 className="t-title">Discover</h1>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenStore}
+            className="chip"
+            title="Credits — tap to top up"
+            aria-label={`Credits: ${typeof credits === 'number' ? credits : 0}. Open the credit store.`}
+          >
+            <Coins className="h-4 w-4 text-brand" />
+            <span className="tabular-nums">{typeof credits === 'number' ? credits : 0}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenFilter}
+            className="icon-btn icon-btn-ghost"
+            aria-label="Discovery filters"
+            title="Filters"
+          >
+            <SlidersHorizontal className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
-      {/* Card Deck */}
-      <div className="relative w-full aspect-[3/4] max-h-[min(70dvh,34rem)] min-h-[22rem]">
-        {/* Underlay next card */}
+      {/* Stage — takes every pixel the header, actions and dock leave over, so
+          the card is as bold as the device allows. */}
+      <div className="relative h-[clamp(20rem,calc(100dvh-14.75rem),46rem)] w-full">
         {nextProfile && currentProfile && (
           <motion.div
             style={{ scale: nextCardScale, y: nextCardY, opacity: nextCardOpacity }}
-            className="absolute inset-0 rounded-2xl overflow-hidden bg-[#1A1816] pointer-events-none will-change-transform"
+            className="pointer-events-none absolute inset-0 overflow-hidden rounded-[1.75rem] bg-black will-change-transform"
+            aria-hidden="true"
           >
-            {nextProfile.photos[0] && <img src={nextProfile.photos[0]} alt={nextProfile.name} className="w-full h-full object-cover object-top brightness-90" referrerPolicy="no-referrer" />}
+            {nextProfile.photos[0] ? (
+              <img
+                src={nextProfile.photos[0]}
+                alt=""
+                className="h-full w-full object-cover object-[50%_32%] brightness-90"
+                referrerPolicy="no-referrer"
+              />
+            ) : null}
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
-            <div className="absolute bottom-5 left-5 text-white">
-              <div className="flex items-center gap-2 mb-0.5">
-                <span className="font-['Cormorant_Garamond',serif] text-2xl font-semibold">
-                  {nextProfile.name}{nextProfile.age ? `, ${nextProfile.age}` : ''}
-                </span>
-              </div>
-              <span className="text-xs text-white/80">{nextProfile.professionTitle}</span>
-            </div>
           </motion.div>
         )}
 
-        {/* Active swipeable card */}
-        <AnimatePresence mode="wait">
-          {currentProfile ? (
+        {currentProfile ? (
             <motion.div
               key={currentProfile.id}
-              style={{ x, y, rotate, scale: activeCardScale }}
-              drag={!exitDirection}
+              style={{ x, y, rotate, opacity: cardOpacity }}
+              drag={exitDirection ? false : true}
               dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
-              dragElastic={0.65}
-              onDragStart={() => setIsDragging(true)}
+              dragElastic={0.72}
+              dragMomentum={false}
               onDragEnd={handleDragEnd}
-              whileDrag={{ 
-                scale: 1.02,
-                boxShadow: '0 20px 40px -8px rgba(0, 0, 0, 0.3)'
-              }}
-              initial={{ scale: 0.95, opacity: 0, y: 12 }}
-              animate={
-                exitDirection === 'right'
-                  ? { x: 450, rotate: 22, opacity: 0, transition: { duration: 0.24, ease: [0.32, 0.72, 0, 1] } }
-                  : exitDirection === 'left'
-                  ? { x: -450, rotate: -22, opacity: 0, transition: { duration: 0.24, ease: [0.32, 0.72, 0, 1] } }
-                  : exitDirection === 'up'
-                  ? { y: -450, scale: 1.06, opacity: 0, transition: { duration: 0.24, ease: [0.32, 0.72, 0, 1] } }
-                  : { x: 0, y: 0, scale: 1, opacity: 1, transition: { type: 'spring', stiffness: 400, damping: 28 } }
-              }
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 rounded-2xl overflow-hidden bg-[#1A1816] shadow-[0_8px_32px_-4px_rgba(0,0,0,0.2)] flex flex-col justify-between cursor-grab active:cursor-grabbing select-none will-change-transform"
+              className="absolute inset-0 flex cursor-grab touch-none flex-col justify-end overflow-hidden rounded-[1.75rem] bg-black shadow-[0_18px_50px_-18px_rgba(26,24,22,0.55)] select-none will-change-transform active:cursor-grabbing"
             >
-              {/* Photo */}
               {currentProfile.photos[currentPhotoIndex] ? (
-                <img src={currentProfile.photos[currentPhotoIndex]} alt={currentProfile.name} className="absolute inset-0 w-full h-full object-cover object-top pointer-events-none transition-opacity duration-300" referrerPolicy="no-referrer" />
+                <img
+                  src={currentProfile.photos[currentPhotoIndex]}
+                  alt={currentProfile.name}
+                  className="pointer-events-none absolute inset-0 h-full w-full object-cover object-[50%_32%]"
+                  referrerPolicy="no-referrer"
+                />
               ) : (
-                <div className="absolute inset-0 flex items-center justify-center bg-[#F0ECE6] text-[#6B665F] text-sm">No photo available</div>
+                <div className="absolute inset-0 flex items-center justify-center bg-surface-subtle text-sm text-ink-soft">
+                  No photo available
+                </div>
               )}
 
-              {/* Scrim */}
-              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/10 pointer-events-none" />
+              {/* Readability scrim */}
+              <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/90 via-black/35 to-black/5" />
 
-              {/* Photo indicators */}
+              {/* Photo progress */}
               {photosCount > 1 && (
-                <div className="relative z-20 px-4 pt-3 flex gap-1 pointer-events-none">
+                <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex gap-1.5 px-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
                   {currentProfile.photos.map((_, idx) => (
-                    <div
+                    <span
                       key={idx}
-                      className={`h-0.5 flex-1 rounded-full transition-all duration-200 ${
+                      className={`h-[3px] flex-1 rounded-full transition-all duration-300 ${
                         idx === currentPhotoIndex ? 'bg-white' : 'bg-white/30'
                       }`}
                     />
@@ -214,167 +246,166 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
                 </div>
               )}
 
-              {/* Photo tap zones */}
-              {photosCount > 1 && !isDragging && (
-                <div className="absolute inset-0 z-10 flex pointer-events-auto">
-                  <div onClick={handlePrevPhoto} role="button" aria-label="Previous photo" className="w-1/2 h-2/3 cursor-pointer" />
-                  <div onClick={handleNextPhoto} role="button" aria-label="Next photo" className="w-1/2 h-2/3 cursor-pointer" />
-                </div>
-              )}
-
-              {/* LIKE stamp */}
-              <motion.div
-                style={{ opacity: likeOpacity, scale: likeScale, rotate: likeRotate }}
-                className="absolute top-12 left-6 z-30 border-2 border-emerald-400 text-emerald-400 px-4 py-1.5 rounded-lg text-lg font-bold tracking-widest uppercase bg-emerald-950/50 backdrop-blur-sm pointer-events-none"
-              >
-                LIKE
-              </motion.div>
-
-              {/* PASS stamp */}
-              <motion.div
-                style={{ opacity: nopeOpacity, scale: nopeScale, rotate: nopeRotate }}
-                className="absolute top-12 right-6 z-30 border-2 border-rose-400 text-rose-400 px-4 py-1.5 rounded-lg text-lg font-bold tracking-widest uppercase bg-rose-950/50 backdrop-blur-sm pointer-events-none"
-              >
-                PASS
-              </motion.div>
-
-              {/* SUPER LIKE stamp */}
-              <motion.div
-                style={{ opacity: superLikeOpacity, scale: superLikeScale }}
-                className="absolute top-12 left-1/2 -translate-x-1/2 z-30 border-2 border-sky-400 text-sky-400 px-4 py-1.5 rounded-lg text-lg font-bold tracking-widest uppercase bg-sky-950/50 backdrop-blur-sm pointer-events-none"
-              >
-                SUPER LIKE
-              </motion.div>
-
-              {/* Info button */}
-              <div className="relative z-20 p-4 flex justify-end">
-                <button
-                  onClick={(e) => { e.stopPropagation(); onOpenProfile(currentProfile); }}
-                  className="w-9 h-9 rounded-full bg-black/30 backdrop-blur-sm text-white/80 hover:text-white flex items-center justify-center transition-colors border border-white/10 active:scale-95 cursor-pointer"
-                  title="View profile"
-                >
-                  <Info className="w-4 h-4" />
-                </button>
+              {/* Decorative cue that the centre opens the full profile */}
+              <div className="pointer-events-none absolute right-3.5 top-3.5 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-white/12 bg-black/30 text-white/80 backdrop-blur-md">
+                <Maximize2 className="h-3.5 w-3.5" />
               </div>
 
-              {/* Profile info overlay */}
-              <div className="relative z-20 p-5 text-white">
-                <div className="flex items-center gap-2 mb-1">
-                  <h3 className="font-['Cormorant_Garamond',serif] text-3xl font-semibold">
-                    {currentProfile.name}, {currentProfile.age}
-                  </h3>
+              {/* Tap zones: left / right cycle photos, centre opens the profile */}
+              <div className="absolute inset-0 z-10 flex" aria-hidden="false">
+                <button
+                  type="button"
+                  onClick={showPrevPhoto}
+                  onPointerDown={(e) => { pointerStart.current = { x: e.clientX, y: e.clientY }; }}
+                  onPointerUp={(e) => {
+                    const start = pointerStart.current;
+                    if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) return;
+                  }}
+                  className="h-full w-[32%] cursor-pointer bg-transparent"
+                  aria-label={photosCount > 1 ? 'Previous photo' : undefined}
+                  tabIndex={-1}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (Date.now() < suppressTapUntil.current) return;
+                    onOpenProfile(currentProfile);
+                  }}
+                  className="h-full w-[36%] cursor-pointer bg-transparent"
+                  aria-label={`Open ${currentProfile.name}'s full profile`}
+                  tabIndex={-1}
+                />
+                <button
+                  type="button"
+                  onClick={showNextPhoto}
+                  onPointerDown={(e) => { pointerStart.current = { x: e.clientX, y: e.clientY }; }}
+                  className="h-full w-[32%] cursor-pointer bg-transparent"
+                  aria-label={photosCount > 1 ? 'Next photo' : undefined}
+                  tabIndex={-1}
+                />
+              </div>
+
+              {/* Drag stamps */}
+              <motion.div
+                style={{ opacity: likeOpacity, scale: likeScale, rotate: likeRotate }}
+                className="pointer-events-none absolute left-5 top-[22%] z-30 rounded-xl border-2 border-emerald-300/90 px-3.5 py-1.5 text-base font-extrabold uppercase tracking-[0.2em] text-emerald-200 backdrop-blur-sm"
+              >
+                Like
+              </motion.div>
+              <motion.div
+                style={{ opacity: nopeOpacity, scale: nopeScale, rotate: nopeRotate }}
+                className="pointer-events-none absolute right-5 top-[22%] z-30 rounded-xl border-2 border-rose-300/90 px-3.5 py-1.5 text-base font-extrabold uppercase tracking-[0.2em] text-rose-200 backdrop-blur-sm"
+              >
+                Pass
+              </motion.div>
+              <motion.div
+                style={{ opacity: superLikeOpacity, scale: superLikeScale }}
+                className="pointer-events-none absolute left-1/2 top-[18%] z-30 -translate-x-1/2 rounded-xl border-2 border-sky-300/90 px-3.5 py-1.5 text-sm font-extrabold uppercase tracking-[0.2em] text-sky-200 backdrop-blur-sm"
+              >
+                Super like
+              </motion.div>
+
+              {/* The card's story: name → service → place → words → hobbies */}
+              <div className="pointer-events-none relative z-20 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] text-white">
+                <div className="flex items-end gap-2">
+                  <h2 className="font-['Cormorant_Garamond',serif] text-[2.35rem] font-semibold leading-[1.02] tracking-tight text-white drop-shadow-[0_2px_12px_rgba(0,0,0,0.4)]">
+                    {nameLine(currentProfile)}
+                  </h2>
                   {currentProfile.verification?.status === 'verified' && (
-                    <span className="text-[#2C6B56] text-xs font-semibold bg-white/20 backdrop-blur-sm px-1.5 py-0.5 rounded" title="Verified">
-                      ✓
-                    </span>
+                    <VerifiedMark size={21} variant="onPhoto" className="mb-2" />
                   )}
                 </div>
 
-                <div className="flex items-center gap-1.5 text-sm text-white/85 mb-2">
-                  <span>{currentProfile.professionTitle}</span>
-                  <span className="text-white/40">·</span>
-                  <span className="flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-white/60" />
-                    {currentProfile.city}
-                  </span>
-                </div>
+                <p className="mt-1.5 truncate text-[0.78125rem] font-bold uppercase tracking-[0.15em] text-white/85">
+                  {serviceLine(currentProfile)}
+                </p>
 
-                {currentProfile.bio && (
-                  <p className="text-sm text-white/75 line-clamp-2 leading-relaxed mb-3">
-                    {currentProfile.bio}
+                {locationLine(currentProfile) && (
+                  <p className="mt-1 flex items-center gap-1.5 text-[0.875rem] text-white/70">
+                    <MapPin className="h-3.5 w-3.5 shrink-0 text-white/50" />
+                    {locationLine(currentProfile)}
                   </p>
                 )}
 
-                {currentProfile.interests && currentProfile.interests.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {currentProfile.interests.slice(0, 4).map((interest, i) => (
+                {quoteLine(currentProfile) && (
+                  <>
+                    <div className="mt-3 h-px w-10 bg-white/25" aria-hidden="true" />
+                    <p className="mt-3 line-clamp-3 text-[0.9375rem] leading-relaxed text-white/85">
+                      {quoteLine(currentProfile)}
+                    </p>
+                  </>
+                )}
+
+                {hobbies.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {hobbies.map((tag) => (
                       <span
-                        key={i}
-                        className="px-2.5 py-1 rounded-md bg-white/10 text-xs text-white/85 font-medium"
+                        key={tag}
+                        className="rounded-full border border-white/18 bg-white/12 px-2.5 py-1 text-[0.75rem] font-medium text-white/90 backdrop-blur-sm"
                       >
-                        {interest}
+                        {tag}
                       </span>
                     ))}
-                    {currentProfile.interests.length > 4 && (
-                      <span className="px-2 py-1 text-xs text-white/50">
-                        +{currentProfile.interests.length - 4}
-                      </span>
-                    )}
                   </div>
                 )}
               </div>
             </motion.div>
           ) : (
-            /* Empty state */
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ duration: 0.3 }}
-              className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center bg-white rounded-2xl border border-[#E8E4DC]"
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.25 }}
+              className="absolute inset-0 flex flex-col items-center justify-center rounded-[1.75rem] border border-line bg-surface px-8 text-center"
             >
-              <div className="w-16 h-16 rounded-full bg-[#F5EAE5] flex items-center justify-center mb-4">
-                <Heart className="w-7 h-7 text-[#B85A3C]" />
+              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-brand-tint">
+                <Heart className="h-7 w-7 text-brand" />
               </div>
-              <h4 className="font-['Cormorant_Garamond',serif] text-xl font-semibold text-[#1A1816] mb-2">
-                You're all caught up
-              </h4>
-              <p className="text-sm text-[#6B665F] mb-6 max-w-[240px] leading-relaxed">
-                You've seen everyone matching your preferences. Check back soon or adjust your filters.
+              <h3 className="font-['Cormorant_Garamond',serif] text-2xl font-semibold">You're all caught up</h3>
+              <p className="mt-2 mb-6 max-w-[16rem] text-sm leading-relaxed text-ink-soft">
+                You've seen everyone matching your preferences. Check back soon, or widen your filters.
               </p>
-              <motion.button
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-                onClick={onResetDeck}
-                className="py-2.5 px-6 rounded-full bg-[#B85A3C] text-white text-sm font-semibold shadow-[0_4px_16px_-2px_rgba(184,90,60,0.3)] hover:bg-[#A04E33] transition-colors cursor-pointer flex items-center gap-2"
-              >
-                <RotateCcw className="w-4 h-4" />
+              <button type="button" onClick={onResetDeck} className="btn btn-primary btn-sm">
+                <RotateCcw className="h-4 w-4" />
                 Refresh
-              </motion.button>
+              </button>
             </motion.div>
-          )}
-        </AnimatePresence>
+        )}
       </div>
 
-      {/* Action buttons — 3 core actions */}
-      <div className="flex items-center justify-center gap-4 pt-5 pb-2">
-        {/* Pass */}
-        <motion.button
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
-          transition={{ type: 'spring', stiffness: 400, damping: 20 }}
-          onClick={triggerSwipeLeft}
+      {/* Actions */}
+      <div className="flex items-center justify-center gap-[1.1rem] pt-4">
+        <button
+          type="button"
+          onClick={() => settleDeck('left')}
           disabled={!currentProfile || !!exitDirection}
-          className="w-14 h-14 rounded-full bg-white border border-[#E8E4DC] text-[#9C958D] hover:text-[#9B2C2C] hover:border-[#9B2C2C]/20 flex items-center justify-center shadow-[0_1px_3px_rgba(0,0,0,0.06)] cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          className="flex h-[3.5rem] w-[3.5rem] items-center justify-center rounded-full border border-line bg-surface text-ink-muted shadow-[0_2px_10px_-2px_rgba(26,24,22,0.14)] transition-colors hover:border-danger/30 hover:text-danger disabled:cursor-not-allowed disabled:opacity-30"
+          aria-label="Pass"
           title="Pass"
         >
-          <X className="w-6 h-6 stroke-[2]" />
-        </motion.button>
+          <X className="h-[1.5rem] w-[1.5rem]" strokeWidth={2.3} />
+        </button>
 
-        {/* Super Like */}
-        <motion.button
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
-          transition={{ type: 'spring', stiffness: 400, damping: 20 }}
-          onClick={triggerSuperLike}
+        <button
+          type="button"
+          onClick={() => settleDeck('up')}
           disabled={!currentProfile || !!exitDirection}
-          className="w-11 h-11 rounded-full bg-white border border-[#E8E4DC] text-[#2A3A2C] hover:text-[#2A3A2C] hover:bg-[#E8EDE9] flex items-center justify-center shadow-[0_1px_3px_rgba(0,0,0,0.06)] cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          title="Super Like"
+          className="flex h-[3rem] w-[3rem] items-center justify-center rounded-full border border-line bg-surface text-verified shadow-[0_2px_10px_-2px_rgba(26,24,22,0.14)] transition-colors hover:border-verified/40 hover:bg-verified-tint disabled:cursor-not-allowed disabled:opacity-30"
+          aria-label="Super like"
+          title="Super like"
         >
-          <Star className="w-5 h-5" />
-        </motion.button>
+          <Star className="h-[1.35rem] w-[1.35rem]" />
+        </button>
 
-        {/* Like */}
-        <motion.button
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
-          transition={{ type: 'spring', stiffness: 400, damping: 20 }}
-          onClick={triggerSwipeRight}
+        <button
+          type="button"
+          onClick={() => settleDeck('right')}
           disabled={!currentProfile || !!exitDirection}
-          className="w-14 h-14 rounded-full bg-[#B85A3C] text-white hover:bg-[#A04E33] flex items-center justify-center shadow-[0_4px_16px_-2px_rgba(184,90,60,0.3)] cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          className="flex h-[3.5rem] w-[3.5rem] items-center justify-center rounded-full bg-brand text-white shadow-[0_8px_22px_-8px_rgba(184,90,60,0.75)] transition-colors hover:bg-brand-dark disabled:cursor-not-allowed disabled:opacity-30"
+          aria-label="Like"
           title="Like"
         >
-          <Heart className="w-6 h-6 fill-white" />
-        </motion.button>
+          <Heart className="h-[1.5rem] w-[1.5rem] fill-white" />
+        </button>
       </div>
     </div>
   );

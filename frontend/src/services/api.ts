@@ -1,4 +1,4 @@
-import { UserProfile, UserPrivacySettings, MatchItem, ChatMessage, SubscriptionTier, MatchPreferences } from '../types';
+import { UserProfile, UserPrivacySettings, MatchItem, ChatMessage, SubscriptionTier, MatchPreferences, CreditPack } from '../types';
 import { clearSession } from './supabase-auth';
 import {
   confirmEmailOtp,
@@ -26,17 +26,27 @@ export interface ClientProfile {
   professionCategory: string;
   professionTitle?: string;
   companyOrOrg?: string;
+  educationLevel?: string;
+  almaMater?: string;
   service?: string;
-  rank?: string;
   dutyStation?: string;
   city: string;
   state: string;
   bio: string;
   photos: string[];
   interests: string[];
+  prompts?: { id: string; question: string; answer: string }[];
+  lifestyle?: UserProfile['lifestyle'];
+  values?: UserProfile['values'];
   datingGoal?: string;
   matchPreferences?: MatchPreferences;
   distanceKm?: number;
+  classOfService?: 'military' | 'police' | 'paramilitary' | 'civilian';
+  orgRole?: 'officer' | 'soldier';
+  skill?: string;
+  credits?: number;
+  accountStatus?: 'active' | 'restricted' | 'banned';
+  restrictionReason?: string;
   verification: { status: UserProfile['verification']['status']; verifiedAt?: string };
   privacy: UserPrivacySettings;
 }
@@ -83,8 +93,9 @@ function toUserProfile(p: ClientProfile, fallback?: Partial<UserProfile>): UserP
     professionCategory: (p.professionCategory as UserProfile['professionCategory']) || 'Others',
     professionTitle: p.professionTitle || '',
     companyOrOrg: p.companyOrOrg,
+    educationLevel: p.educationLevel,
+    almaMater: p.almaMater,
     service: p.service as UserProfile['service'],
-    rank: p.rank,
     dutyStation: p.dutyStation,
     city: p.city || '',
     state: p.state || '',
@@ -92,9 +103,18 @@ function toUserProfile(p: ClientProfile, fallback?: Partial<UserProfile>): UserP
     bio: p.bio || '',
     photos: p.photos?.length ? p.photos : fallback?.photos || [],
     interests: p.interests || [],
+    prompts: p.prompts?.length ? p.prompts : undefined,
+    lifestyle: p.lifestyle,
+    values: p.values,
     intentions: fallback?.intentions || [],
     datingGoal: p.datingGoal as UserProfile['datingGoal'],
     matchPreferences: p.matchPreferences,
+    classOfService: p.classOfService,
+    orgRole: p.orgRole,
+    skill: p.skill,
+    credits: p.credits,
+    accountStatus: p.accountStatus,
+    restrictionReason: p.restrictionReason,
     verification: {
       status: p.verification.status,
       verifiedAt: p.verification.verifiedAt,
@@ -158,15 +178,23 @@ export const WassaaApi = {
     if (updates.professionCategory !== undefined) body.professionCategory = updates.professionCategory;
     if (updates.professionTitle !== undefined) body.professionTitle = updates.professionTitle;
     if (updates.companyOrOrg !== undefined) body.companyOrOrg = updates.companyOrOrg;
+    if (updates.educationLevel !== undefined) body.educationLevel = updates.educationLevel;
+    if (updates.almaMater !== undefined) body.almaMater = updates.almaMater;
     if (updates.service !== undefined) body.service = updates.service;
-    if (updates.rank !== undefined) body.rank = updates.rank;
     if (updates.dutyStation !== undefined) body.dutyStation = updates.dutyStation;
     if (updates.city !== undefined) body.city = updates.city;
     if (updates.state !== undefined) body.state = updates.state;
     if (updates.bio !== undefined) body.bio = updates.bio;
     if (updates.photos !== undefined) body.photos = updates.photos;
     if (updates.interests !== undefined) body.interests = updates.interests;
+    // The three blocks onboarding collects on steps 7–9; the API stores them
+    // in `prompts`, `lifestyle` and `values_family`.
+    if (updates.prompts !== undefined) body.prompts = updates.prompts;
+    if (updates.lifestyle !== undefined) body.lifestyle = updates.lifestyle;
+    if (updates.values !== undefined) body.values = updates.values;
     if (updates.datingGoal !== undefined) body.datingGoal = updates.datingGoal;
+    if (updates.orgRole !== undefined) body.orgRole = updates.orgRole;
+    if (updates.skill !== undefined) body.skill = updates.skill;
     const res = await fetchJson<{ user: ClientProfile | null }>(`${BASE_URL}/me/profile`, { method: 'PATCH', body: JSON.stringify(body) });
     return toUserProfile(res.user || (updates as UserProfile));
   },
@@ -198,17 +226,24 @@ export const WassaaApi = {
   },
 
   // ---- Swipes ----
-  async like(targetUserId: string, opts?: { superLike?: boolean; note?: string }): Promise<{ isMatch: boolean; match?: { id: string } }> {
+  async like(targetUserId: string, opts?: { superLike?: boolean; note?: string }): Promise<{ isMatch: boolean; match?: { id: string }; balance?: number }> {
     const res = await post(`${BASE_URL}/likes`, { targetUserId, superLike: opts?.superLike, note: opts?.note });
     const match = res.match as { id: string } | undefined;
-    return { isMatch: !!res.isMatch, match };
+    return { isMatch: !!res.isMatch, match, balance: typeof res.balance === 'number' ? res.balance : undefined };
   },
   async pass(targetUserId: string): Promise<void> {
     await post(`${BASE_URL}/passes`, { targetUserId });
   },
-  async getLikesReceived(): Promise<UserProfile[]> {
-    const res = await fetchJson<{ likes: ClientProfile[] }>(`${BASE_URL}/likes/received`);
-    return res.likes.map((l) => toUserProfile(l));
+  async getLikesReceived(opts?: { reveal?: boolean }): Promise<{ likes: UserProfile[]; locked: boolean; cost?: number }> {
+    // Without `reveal` the backend only reports the price — no surprise charges.
+    const res = await fetchJson<{ likes: ClientProfile[]; locked?: boolean; cost?: number }>(
+      `${BASE_URL}/likes/received${opts?.reveal ? '?reveal=1' : ''}`
+    );
+    return { likes: (res.likes || []).map((l) => toUserProfile(l)), locked: Boolean(res.locked), cost: res.cost };
+  },
+  async boost(): Promise<{ boostedUntil: string; balance: number }> {
+    const res = await post(`${BASE_URL}/me/boost`);
+    return { boostedUntil: String(res.boostedUntil || ''), balance: Number(res.balance ?? 0) };
   },
 
   // ---- Matches & chat ----
@@ -232,9 +267,9 @@ export const WassaaApi = {
     );
     return { messages: res.messages };
   },
-  async sendMessage(matchId: string, message: { kind: 'text'; text: string } | { kind: 'photo'; mediaUrl: string; caption?: string }): Promise<ChatMessage> {
+  async sendMessage(matchId: string, message: { kind: 'text'; text: string } | { kind: 'photo'; mediaUrl: string; caption?: string }): Promise<{ message: ChatMessage; balance?: number }> {
     const res = await post(`${BASE_URL}/matches/${matchId}/messages`, message);
-    return res.message as ChatMessage;
+    return { message: res.message as ChatMessage, balance: typeof res.balance === 'number' ? res.balance : undefined };
   },
   async markRead(matchId: string): Promise<void> {
     await post(`${BASE_URL}/matches/${matchId}/read`);
@@ -251,8 +286,19 @@ export const WassaaApi = {
   async unblock(userId: string): Promise<void> {
     await fetchJson(`${BASE_URL}/blocks/${userId}`, { method: 'DELETE' });
   },
-  async submitReport(report: { reportedUserId: string; category: string; categoryLabel: string; details: string; alsoBlock: boolean; serviceBranch?: string }): Promise<void> {
+  async submitReport(report: { reportedUserId: string; category: string; categoryLabel: string; details: string; alsoBlock: boolean; serviceBranch?: string; matchId?: string; messageId?: string }): Promise<void> {
     await post(`${BASE_URL}/reports`, report);
+  },
+
+  // ---- Appeals (after a restriction or ban) ----
+  async getAppeals(): Promise<{ id: string; status: 'pending' | 'granted' | 'denied'; note: string; sanctionReason?: string; decisionNote?: string; createdAt: string; decidedAt?: string }[]> {
+    const res = await fetchJson<{ appeals: { id: string; status: 'pending' | 'granted' | 'denied'; note: string; sanctionReason?: string; decisionNote?: string; createdAt: string; decidedAt?: string }[] }>(`${BASE_URL}/appeals`);
+    return res.appeals || [];
+  },
+  async submitAppeal(note: string): Promise<{ id: string; status: string }> {
+    const res = await post(`${BASE_URL}/appeals`, { note });
+    const appeal = res.appeal as { id: string; status: string } | undefined;
+    return { id: String(appeal?.id || ''), status: String(appeal?.status || 'pending') };
   },
 
   // ---- Verification ----
@@ -290,24 +336,26 @@ export const WassaaApi = {
     return fetchJson(`${BASE_URL}/verification/status`);
   },
 
-  // ---- Billing ----
+  // ---- Billing (credit packs — KB §18E) ----
   async getPlans(): Promise<{ plans: { id: string; name: string; priceNgn: number; features: string[] }[]; consumables: { id: string; naira: number }[] }> {
     return fetchJson(`${BASE_URL}/billing/plans-public`);
   },
-  async checkout(planId: string, email?: string): Promise<{ sandbox: boolean; reference: string; authorizationUrl?: string; amountNaira: number; message?: string }> {
+  async checkout(planId: string, email?: string): Promise<{ sandbox: boolean; reference: string; authorizationUrl?: string; amountNaira: number; credits?: number; message?: string }> {
     return fetchJson(`${BASE_URL}/billing/checkout`, { method: 'POST', body: JSON.stringify({ planId, email }) });
   },
   async sandboxComplete(reference: string): Promise<void> {
     await post(`${BASE_URL}/billing/sandbox/complete`, { reference });
   },
-  async activate(reference: string): Promise<{ tier: string }> {
+  async activate(reference: string): Promise<{ tier: string; credits: number }> {
     const res = await post(`${BASE_URL}/billing/activate`, { reference });
-    return { tier: String(res.tier) };
+    return { tier: String(res.tier), credits: Number(res.credits ?? 0) };
   },
   async getEntitlements(): Promise<{
     tier: SubscriptionTier; dailyLikes: number; superLikesPerWeek: number; canSeeLikes: boolean;
     canRewind: boolean; incognito: boolean; privateIntroduction: boolean; boostsPerMonth: number; readReceipts: boolean;
+    credits: number; revealLikesCost?: number; packs: CreditPack[];
   }> {
-    return fetchJson(`${BASE_URL}/billing/entitlements`);
+    const res = await fetchJson<{ packs?: CreditPack[] } & Record<string, any>>(`${BASE_URL}/billing/entitlements`);
+    return { ...res, credits: Number(res.credits ?? 0), packs: res.packs || [] } as any;
   }
 };
