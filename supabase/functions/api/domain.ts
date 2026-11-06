@@ -14,6 +14,13 @@ export function ageAt(value: unknown, now = new Date()): number | undefined {
   return age;
 }
 
+/** Military, paramilitary and law enforcement: no job title in onboarding,
+ * neither civilian ranks nor civilian job titles are collected, so the
+ * profession requirement is met by category alone. */
+const UNIFORMED_CATEGORIES = ['Military', 'Police', 'Paramilitary'];
+const isUniformedCategory = (category: unknown): boolean =>
+  UNIFORMED_CATEGORIES.includes(String(category));
+
 /** Server-side eligibility gate for discovery and all member conversations. */
 export function isOnboardingComplete(profile: ProfileRecord, now = new Date()): boolean {
   const name = clean(profile.name, 60);
@@ -26,7 +33,8 @@ export function isOnboardingComplete(profile: ProfileRecord, now = new Date()): 
     && age != null && age >= 18 && age <= 110
     && ['female', 'male'].includes(String(profile.gender))
     && Array.isArray(profile.photos) && profile.photos.length >= 2
-    && Boolean(clean(profile.profession_category, 60) && clean(profile.profession_title, 80))
+    && Boolean(clean(profile.profession_category, 60)
+      && (isUniformedCategory(profile.profession_category) || clean(profile.profession_title, 80)))
     && Boolean(clean(profile.city, 100) && clean(profile.state, 100))
     && clean(profile.bio, 1000).length >= 10
     && interests.length >= 3

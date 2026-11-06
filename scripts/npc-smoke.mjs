@@ -191,11 +191,13 @@ async function main() {
   if (partnerIsGreeter) check('persona sends the opening message', Boolean(greeting), greeting ? `"${String(greeting.text).slice(0, 60)}…"` : 'no greeting within 210s');
   else console.log('  INFO  matched persona is a non-greeter; it waits for the member to speak first (by design)');
 
-  step('6. Member reply costs exactly 1 credit');
+  step('6. Member reply is debited at the published text price');
   const before = Number((await api('/auth/session', { token })).data?.user?.credits);
+  const pricing = await api('/billing/entitlements', { token });
+  const textCost = Number(pricing.data?.pricing?.text);
   const send = await api(`/matches/${matchId}/messages`, { token, method: 'POST', body: { kind: 'text', text: 'Hello! What do you enjoy doing in Lagos?' } });
   check('message accepted', send.status === 200 && Boolean(send.data?.message?.id), `status ${send.status}`);
-  check('send debits exactly 1 credit', Number(send.data?.balance) === before - 1, `balance ${send.data?.balance} from ${before}`);
+  check('send debits the published text price', Number(send.data?.balance) === before - textCost, `balance ${send.data?.balance} from ${before} at ${textCost}/text`);
 
   step('7. Persona replies through the normal thread (20–90 s window)');
   let reply = null;

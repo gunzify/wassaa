@@ -42,6 +42,13 @@
       .sheet-head strong { font-family: Georgia, serif; font-size: 18px; }
       .composer { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); }
       .composer input { flex: 1; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; font: inherit; background: #fdfcf9; }
+      .overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 0 0 18px; }
+      .overview .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; cursor: pointer; text-align: left; font: inherit; color: inherit; }
+      .overview .card b { display: block; font-size: 22px; font-family: Georgia, serif; font-weight: 400; }
+      .overview .card span { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+      .overview .card.alert b { color: var(--danger); }
+      .badge-paid { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 7px; border-radius: 999px; background: #eef6f1; color: var(--verified); }
+      .npc .body .flagline { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
       @media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } .audit-row { grid-template-columns: 1fr; gap: 2px; } }
     </style>
   </head>
@@ -77,6 +84,7 @@
       </header>
 
       <main>
+        <div id="overview" class="overview"></div>
         <section id="panel-verifications" class="panel">
           <p class="hint">Compare the ID photo with the selfie, then with the name and date of birth on the profile. Approve only when all three agree. Approved documents are kept encrypted for face re-checks when an account is reported.</p>
           <div id="queue" class="queue"></div>
@@ -117,6 +125,11 @@
               <option value="quiet">Quiet (paused)</option>
               <option value="admin_owned">Team-operated</option>
             </select>
+            <select id="threads-paid">
+              <option value="">All members</option>
+              <option value="1">Paid members first</option>
+            </select>
+            <span id="threads-paid-count" class="state">0 paid</span>
           </div>
           <div id="threads" class="queue"></div>
         </section>
@@ -125,9 +138,33 @@
           <p class="hint">The persona pool real members swipe and match with. Edit biographies, pause a persona from discovery, or upload a photo (stored in R2).</p>
           <div class="toolbar">
             <input id="npc-search" type="search" placeholder="Search by name…" />
-            <button id="npc-search-btn" class="btn" type="button">Search</button>
+            <select id="npc-country"><option value="">All countries</option></select>
+            <select id="npc-class">
+              <option value="">All classes</option>
+              <option value="military">Military</option>
+              <option value="police">Police</option>
+              <option value="paramilitary">Paramilitary</option>
+              <option value="civilian">Civilian</option>
+            </select>
+            <select id="npc-service"><option value="">All services</option></select>
+            <select id="npc-gender">
+              <option value="">Any gender</option>
+              <option value="female">Female</option>
+              <option value="male">Male</option>
+            </select>
+            <select id="npc-active">
+              <option value="">Active + paused</option>
+              <option value="1">Active only</option>
+              <option value="0">Paused only</option>
+            </select>
+            <button id="npc-search-btn" class="btn" type="button">Apply</button>
+            <button id="npc-clear" class="btn ghost" type="button">Clear</button>
+            <span id="npc-count" class="state">0 personas</span>
           </div>
           <div id="npcs" class="npc-grid"></div>
+          <div class="toolbar">
+            <button id="npc-more" class="btn ghost hidden" type="button">Load more</button>
+          </div>
         </section>
 
         <section id="panel-audit" class="panel hidden">

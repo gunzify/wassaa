@@ -1,4 +1,15 @@
 import { UserProfile, UserPrivacySettings, MatchItem, ChatMessage, SubscriptionTier, MatchPreferences, CreditPack } from '../types';
+
+/** Live credit pricing from /billing/entitlements — drives composer hints. */
+export interface Pricing {
+  text: number;
+  photo: number;
+  coldMultiplier: number;
+  freeDailySwipes: number;
+  paidSwipe: number;
+  superLike: number;
+  revealLikes: number;
+}
 import { clearSession } from './supabase-auth';
 import {
   confirmEmailOtp,
@@ -304,12 +315,19 @@ export const WassaaApi = {
   // ---- Verification ----
   async submitVerification(payload: {
     documentType: string;
-    documentNumber: string;
+    /** Accepted for compatibility only; the server stores no document number (KB 2026-11-05). */
+    documentNumber?: string;
     idDocKey?: string;
     selfieKey?: string;
   }): Promise<{ status: string; message: string }> {
     const res = await post(`${BASE_URL}/verification/submit`, payload);
     return { status: String(res.status || 'pending'), message: String(res.message || '') };
+  },
+
+  /** Cold open: start a conversation with someone you are not matched with. */
+  async openDirectThread(profileId: string): Promise<{ matchId: string; partner: UserProfile }> {
+    const res = await post(`${BASE_URL}/direct-threads`, { profileId });
+    return { matchId: String(res.matchId), partner: res.partner as UserProfile };
   },
 
   /** Presigned direct-to-R2 upload. Media does not travel through API bodies. */
@@ -354,6 +372,7 @@ export const WassaaApi = {
     tier: SubscriptionTier; dailyLikes: number; superLikesPerWeek: number; canSeeLikes: boolean;
     canRewind: boolean; incognito: boolean; privateIntroduction: boolean; boostsPerMonth: number; readReceipts: boolean;
     credits: number; revealLikesCost?: number; packs: CreditPack[];
+    pricing?: Pricing;
   }> {
     const res = await fetchJson<{ packs?: CreditPack[] } & Record<string, any>>(`${BASE_URL}/billing/entitlements`);
     return { ...res, credits: Number(res.credits ?? 0), packs: res.packs || [] } as any;

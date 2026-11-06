@@ -154,7 +154,7 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
   };
 
   const photosCount = currentProfile?.photos.length || 0;
-  const hobbies = currentProfile ? interestChips(currentProfile, 5) : [];
+  const hobbies = currentProfile ? interestChips(currentProfile, 3) : [];
 
   return (
     <div className="flex w-full select-none flex-col">
@@ -229,8 +229,8 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
                 </div>
               )}
 
-              {/* Readability scrim */}
-              <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/90 via-black/35 to-black/5" />
+              {/* Readability scrim — kept light so the photo stays dominant */}
+              <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/80 via-black/25 to-transparent" />
 
               {/* Photo progress */}
               {photosCount > 1 && (
@@ -305,43 +305,41 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
                 Super like
               </motion.div>
 
-              {/* The card's story: name → service → place → words → hobbies */}
-              <div className="pointer-events-none relative z-20 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] text-white">
-                <div className="flex items-end gap-2">
-                  <h2 className="font-['Cormorant_Garamond',serif] text-[2.35rem] font-semibold leading-[1.02] tracking-tight text-white drop-shadow-[0_2px_12px_rgba(0,0,0,0.4)]">
+              {/* The card's story: name → service → place → words → hobbies.
+                  Sized to sit over the lower third only, so the face shows. */}
+              <div className="pointer-events-none relative z-20 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-white">
+                <div className="flex items-end gap-1.5">
+                  <h2 className="font-['Cormorant_Garamond',serif] text-[1.8rem] font-semibold leading-[1.05] tracking-tight text-white drop-shadow-[0_2px_12px_rgba(0,0,0,0.4)]">
                     {nameLine(currentProfile)}
                   </h2>
                   {currentProfile.verification?.status === 'verified' && (
-                    <VerifiedMark size={21} variant="onPhoto" className="mb-2" />
+                    <VerifiedMark size={17} variant="onPhoto" className="mb-1.5" />
                   )}
                 </div>
 
-                <p className="mt-1.5 truncate text-[0.78125rem] font-bold uppercase tracking-[0.15em] text-white/85">
+                <p className="mt-0.5 truncate text-[0.6875rem] font-bold uppercase tracking-[0.14em] text-white/85">
                   {serviceLine(currentProfile)}
                 </p>
 
                 {locationLine(currentProfile) && (
-                  <p className="mt-1 flex items-center gap-1.5 text-[0.875rem] text-white/70">
-                    <MapPin className="h-3.5 w-3.5 shrink-0 text-white/50" />
+                  <p className="mt-0.5 flex items-center gap-1.5 text-[0.78125rem] text-white/70">
+                    <MapPin className="h-3 w-3 shrink-0 text-white/50" />
                     {locationLine(currentProfile)}
                   </p>
                 )}
 
                 {quoteLine(currentProfile) && (
-                  <>
-                    <div className="mt-3 h-px w-10 bg-white/25" aria-hidden="true" />
-                    <p className="mt-3 line-clamp-3 text-[0.9375rem] leading-relaxed text-white/85">
-                      {quoteLine(currentProfile)}
-                    </p>
-                  </>
+                  <p className="mt-2 line-clamp-2 text-[0.8125rem] leading-snug text-white/85">
+                    {quoteLine(currentProfile)}
+                  </p>
                 )}
 
                 {hobbies.length > 0 && (
-                  <div className="mt-3 flex flex-wrap gap-1.5">
+                  <div className="mt-2 flex flex-wrap gap-1">
                     {hobbies.map((tag) => (
                       <span
                         key={tag}
-                        className="rounded-full border border-white/18 bg-white/12 px-2.5 py-1 text-[0.75rem] font-medium text-white/90 backdrop-blur-sm"
+                        className="rounded-full border border-white/18 bg-white/12 px-2 py-[0.125rem] text-[0.65625rem] font-medium text-white/90 backdrop-blur-sm"
                       >
                         {tag}
                       </span>

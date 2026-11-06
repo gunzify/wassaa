@@ -2,12 +2,15 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-function requiredEnv(name: string, optionalInDev = true): string | undefined {
+function requiredSecret(name: string, minLength: number): string {
   const value = process.env[name];
   if (!value) {
-    if (optionalInDev && process.env.NODE_ENV !== 'production') return undefined;
-    if (optionalInDev) return undefined;
-    throw new Error(`Missing required environment variable: ${name}`);
+    throw new Error(
+      `Missing required environment variable: ${name}. Set it in backend/.env (generate one with: openssl rand -hex 32).`
+    );
+  }
+  if (value.length < minLength) {
+    throw new Error(`${name} must be at least ${minLength} characters.`);
   }
   return value;
 }
@@ -20,7 +23,9 @@ export const config = {
     .map((s) => s.trim())
     .filter(Boolean),
 
-  sessionJwtSecret: process.env.SESSION_JWT_SECRET || 'wassaa-dev-insecure-jwt-secret',
+  // No committed fallbacks: a deployment that forgets either variable must
+  // fail to start instead of signing sessions with a public string.
+  sessionJwtSecret: requiredSecret('SESSION_JWT_SECRET', 32),
   googleClientId: process.env.GOOGLE_CLIENT_ID || '',
 
   dataBackend: (process.env.DATA_BACKEND || 'memory') as 'memory' | 'supabase',
@@ -36,7 +41,7 @@ export const config = {
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || '',
   paystackCallbackUrl: process.env.PAYSTACK_CALLBACK_URL || 'http://localhost:3000/billing/callback',
 
-  adminApiKey: process.env.ADMIN_API_KEY || 'wassaa-admin-dev-key',
+  adminApiKey: requiredSecret('ADMIN_API_KEY', 24),
 
   // Object storage (Cloudflare R2, S3-compatible)
   r2AccountId: process.env.R2_ACCOUNT_ID || '',

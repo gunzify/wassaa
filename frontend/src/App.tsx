@@ -28,9 +28,10 @@ import { SubscriptionPlansScreen } from './components/screens/SubscriptionPlansS
 import { AppealScreen } from './components/screens/AppealScreen';
 import { RealDatingOnboardingFlow } from './components/onboarding/RealDatingOnboardingFlow';
 import { ReportCategoryKey } from './components/chat/BlockReportModal';
-import { WassaaApi } from './services/api';
-import { preparePhoto } from './services/media';
-import { signOut, clearSession } from './services/supabase-auth';
+import { WassaaApi, type Pricing } from './services/api';
+import { preloadImages, preparePhoto } from './services/media';
+import { readSession, signOut, clearSession } from './services/supabase-auth';
+import { clearStartupSnapshots, pruneStartupSnapshots, readStartupSnapshot, saveStartupSnapshot } from './services/cache';
 import { getProfileCompletion } from './services/profile-readiness';
 import { subscribeToMatch } from './services/realtime';
 import { initAnalytics, identifyUser, resetAnalytics, track } from './services/analytics';
@@ -88,11 +89,16 @@ export default function App() {
   const [packs, setPacks] = useState<CreditPack[]>([]);
   const [likesLocked, setLikesLocked] = useState(true);
   const [likesCost, setLikesCost] = useState(15);
+  // Live credit prices from /billing/entitlements (text 5, photo 10, cold 2x…).
+  const [pricing, setPricing] = useState<Pricing>({ text: 5, photo: 10, coldMultiplier: 2, freeDailySwipes: 20, paidSwipe: 1, superLike: 3, revealLikes: 15 });
   const [identityOrigin, setIdentityOrigin] = useState<ScreenId>('profile_setup');
   const [lastInteractedProfile, setLastInteractedProfile] = useState<UserProfile | null>(null);
   const [blockedUsers, setBlockedUsers] = useState<{ id: string; name: string; reason?: string; date?: string }[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [googleBusy, setGoogleBusy] = useState(false);
+  // Password auth has two surfaces: sign-up (email + confirm password, then a
+  // verification link) and sign-in (email + password).
+  const [emailAuthMode, setEmailAuthMode] = useState<'signup' | 'signin'>('signup');
   const [pendingMatch, setPendingMatch] = useState<{ id: string; partner: UserProfile } | null>(null);
   const lastMessageTs = useRef<string | undefined>(undefined);
 
@@ -125,39 +131,121 @@ export default function App() {
   // privacy); this only boots the SDK for members who already did.
   useEffect(() => { initAnalytics(); }, []);
 
-  // ---------- Boot: restore session ----------
+  // ---------- Boot: paint from cache, then revalidate ----------
   useEffect(() => {
+    let restoredAccountId = '';
     (async () => {
+      // 1. Paint the last session before touching the network, so a returning
+      //    member sees their deck instead of a blank shell on a slow connection.
       try {
-        const user = await WassaaApi.fetchSession();
-        if (user) {
-          setCurrentUser(user);
-          identifyUser(user);
-          setCurrentTier('free');
-          setCredits(user.credits ?? 0);
-          const profileComplete = getProfileCompletion(user).complete;
-          // A banned account goes straight to its appeal screen (KB §18D).
-          setCurrentScreen(user.accountStatus === 'banned' ? 'appeal' : profileComplete ? 'discover' : 'onboarding_dating');
-          if (profileComplete) {
-            const [ens, blocked] = await Promise.all([
-              WassaaApi.getEntitlements(),
-              WassaaApi.listBlocked()
-            ]);
-            setCurrentTier(ens.tier);
-            setCredits(ens.credits);
-            setPacks(ens.packs);
-            if (ens.revealLikesCost) setLikesCost(ens.revealLikesCost);
-            setBlockedUsers(blocked);
-            WassaaApi.getMatches().then((ms) => setMatches(ms)).catch(() => undefined);
+        const session = readSession();
+        // A magic-link redirect stores the session without a user id. Without an
+        // id we cannot prove which account the snapshot belongs to, so we skip
+        // the cache rather than risk painting a previous member's deck.
+        const sessionAccountId = session?.user?.id || '';
+        if (sessionAccountId) {
+          const snapshot = readStartupSnapshot(sessionAccountId);
+          if (snapshot?.user) {
+            const cachedUser = snapshot.user.value;
+            restoredAccountId = cachedUser.id;
+            setCurrentUser(cachedUser);
+            identifyUser(cachedUser);
+            setCurrentTier(snapshot.entitlements?.value.tier ?? 'free');
+            setCredits(snapshot.entitlements?.value.credits ?? cachedUser.credits ?? 0);
+            if (snapshot.entitlements?.value.packs.length) setPacks(snapshot.entitlements.value.packs);
+            if (snapshot.entitlements?.value.revealLikesCost) setLikesCost(snapshot.entitlements.value.revealLikesCost);
+            if (snapshot.blocked) setBlockedUsers(snapshot.blocked.value);
+            if (snapshot.matches) setMatches(snapshot.matches.value);
+            if (snapshot.deck) setDeck(snapshot.deck.value);
+            if (snapshot.explore) setExploreProfiles(snapshot.explore.value);
+            const complete = getProfileCompletion(cachedUser).complete;
+            setCurrentScreen(cachedUser.accountStatus === 'banned' ? 'appeal' : complete ? 'discover' : 'onboarding_dating');
+            setBooting(false);
           }
         }
       } catch {
-        // signed out / offline: start fresh
+        // A corrupt cache must never stop the app from opening.
+      }
+
+      // 2. Revalidate against the server and apply anything that changed.
+      const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+      try {
+        const user = await WassaaApi.fetchSession();
+        if (!user) {
+          // No session: sign out cleanly — unless we are merely offline, in which
+          // case the cached view is the only thing the member can use.
+          if (offline && restoredAccountId) {
+            showToast('You are offline — showing your saved profiles.');
+            return;
+          }
+          clearStartupSnapshots();
+          if (restoredAccountId) {
+            setCurrentUser(null);
+            setCurrentScreen('splash');
+          }
+          return;
+        }
+        // The session belongs to a different account than the one we painted
+        // from: drop the previous member's deck and matches before showing his.
+        if (restoredAccountId && user.id !== restoredAccountId) {
+          clearStartupSnapshots();
+          setDeck([]);
+          setMatches([]);
+          setBlockedUsers([]);
+          setExploreProfiles([]);
+          setLikesReceived([]);
+        }
+        setCurrentUser(user);
+        identifyUser(user);
+        setCurrentTier('free');
+        setCredits(user.credits ?? 0);
+        saveStartupSnapshot({ user });
+        const profileComplete = getProfileCompletion(user).complete;
+        // A banned account goes straight to its appeal screen (KB §18D).
+        setCurrentScreen(user.accountStatus === 'banned' ? 'appeal' : profileComplete ? 'discover' : 'onboarding_dating');
+        if (profileComplete) {
+          const [entitlements, blocked] = await Promise.all([
+            WassaaApi.getEntitlements().catch(() => null),
+            WassaaApi.listBlocked().catch(() => null)
+          ]);
+          if (entitlements) {
+            setCurrentTier(entitlements.tier);
+            setCredits(entitlements.credits);
+            setPacks(entitlements.packs);
+            if (entitlements.revealLikesCost) setLikesCost(entitlements.revealLikesCost);
+            if (entitlements.pricing) setPricing(entitlements.pricing);
+            saveStartupSnapshot({
+              entitlements: {
+                tier: entitlements.tier,
+                credits: entitlements.credits,
+                packs: entitlements.packs,
+                revealLikesCost: entitlements.revealLikesCost ?? likesCost
+              }
+            });
+          }
+          if (blocked) {
+            setBlockedUsers(blocked);
+            saveStartupSnapshot({ blocked });
+          }
+          WassaaApi.getMatches()
+            .then((ms) => { setMatches(ms); saveStartupSnapshot({ matches: ms }); })
+            .catch(() => undefined);
+        }
+      } catch (error) {
+        // A rejected session is a sign-out; a dead connection is not.
+        if ((error as { status?: number }).status === 401) {
+          clearStartupSnapshots();
+          setCurrentUser(null);
+          setCurrentScreen('splash');
+        } else if (restoredAccountId) {
+          showToast('Showing your saved profiles — we will refresh when you are back online.');
+        }
       } finally {
         setBooting(false);
+        pruneStartupSnapshots();
       }
     })();
-  }, []);
+  }, [showToast]);
 
   // ---------- Discovery deck ----------
   const loadDeck = useCallback(async () => {
@@ -165,6 +253,7 @@ export default function App() {
       const res = await WassaaApi.getDiscovery({ limit: 15 });
       setDeck(res.profiles);
       setDeckIndex(0);
+      saveStartupSnapshot({ deck: res.profiles });
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Could not refresh profiles');
     }
@@ -179,6 +268,7 @@ export default function App() {
     try {
       const res = await WassaaApi.getDiscovery({ limit: 36 });
       setExploreProfiles(res.profiles);
+      saveStartupSnapshot({ explore: res.profiles });
     } catch {
       /* browsing is browse-only: keep whatever page is already on screen */
     } finally {
@@ -198,6 +288,11 @@ export default function App() {
 
   const currentDiscoverProfile = deck[deckIndex];
   const nextDiscoverProfile = deck[deckIndex + 1];
+
+  // Warm the next couple of cards so a swipe never waits on the network.
+  useEffect(() => {
+    preloadImages(deck.slice(deckIndex + 1, deckIndex + 3).map((profile) => profile.photos[0]), 2);
+  }, [deck, deckIndex]);
 
   // ---------- Swipe handlers (server-authoritative) ----------
   const advanceDeck = useCallback(() => setDeckIndex((i) => i + 1), []);
@@ -224,7 +319,7 @@ export default function App() {
       }
     } catch (err) {
       const e = err as Error & { code?: string };
-      if (e.code === 'LIKE_LIMIT') showToast('Daily like limit reached — try again tomorrow');
+      if (e.code === 'LIKE_LIMIT') showToast(e.message || 'Daily like limit reached — 1 credit per extra swipe');
       else handleApiError(err, 'Could not send your like.');
     }
     advanceDeck();
@@ -258,6 +353,7 @@ export default function App() {
     try {
       const ms = await WassaaApi.getMatches();
       setMatches(ms);
+      saveStartupSnapshot({ matches: ms });
     } catch { /* silent */ }
   }, []);
 
@@ -396,6 +492,20 @@ export default function App() {
 
   const blockedUserIds = blockedUsers.map((b) => b.id);
 
+  // Cold open: message someone you are not matched with yet. Creates the
+  // thread (no charge to open it) on the server, then opens it like any chat.
+  const handleStartDirectChat = useCallback(async (profile: UserProfile, origin: ScreenId = 'profile_view') => {
+    if (blockedUserIds.includes(profile.id)) { showToast('Cannot message a blocked contact.'); return; }
+    try {
+      const { matchId, partner } = await WassaaApi.openDirectThread(profile.id);
+      const fresh = partner || profile;
+      await openMatch(matchId, fresh, origin);
+      void refreshMatches();
+    } catch (err) {
+      handleApiError(err, 'Could not start this chat.');
+    }
+  }, [blockedUserIds, openMatch, handleApiError, refreshMatches]);
+
   // ---------- Sending ----------
   const handleSendMessage = useCallback(async (text: string): Promise<boolean> => {
     if (!activeMatchId) return false;
@@ -499,6 +609,7 @@ export default function App() {
           : {}),
       };
       setCurrentUser((prev) => (prev ? { ...prev, ...merged } : merged));
+      saveStartupSnapshot({ user: merged });
       showToast('Profile saved');
       return true;
     } catch (err) {
@@ -510,6 +621,7 @@ export default function App() {
   const handleDeleteAccount = useCallback(async () => {
     try {
       await WassaaApi.deleteAccount();
+      clearStartupSnapshots();
       resetAnalytics();
       setCurrentUser(null);
       setMatches([]);
@@ -526,6 +638,7 @@ export default function App() {
     // `wassaa_session_token` shim is not the active session store, so relying on
     // it left the user signed in after "Sign out".
     try { await signOut(); } catch { clearSession(); }
+    clearStartupSnapshots();
     resetAnalytics();
     setCurrentUser(null);
     setMatches([]);
@@ -615,6 +728,7 @@ export default function App() {
     setCurrentUser(user);
     identifyUser(user);
     setCredits(user.credits ?? 0);
+    saveStartupSnapshot({ user });
     const complete = getProfileCompletion(user).complete;
     track('sign_in_completed', { method, onboarding_complete: complete });
     setCurrentScreen(user.accountStatus === 'banned' ? 'appeal' : complete ? 'discover' : 'onboarding_dating');
@@ -624,6 +738,7 @@ export default function App() {
         setCredits(entitlements.credits);
         setPacks(entitlements.packs);
         if (entitlements.revealLikesCost) setLikesCost(entitlements.revealLikesCost);
+        if (entitlements.pricing) setPricing(entitlements.pricing);
       }).catch(() => undefined);
       void WassaaApi.listBlocked().then(setBlockedUsers).catch(() => undefined);
       void WassaaApi.getMatches().then(setMatches).catch(() => undefined);
@@ -718,8 +833,8 @@ export default function App() {
               {currentScreen === 'signup' && (
                 <SignUpScreen
                   onBack={() => setCurrentScreen('splash')}
-                  onContinueEmail={() => setCurrentScreen('email_verify')}
-                  onLogIn={() => setCurrentScreen('email_verify')}
+                  onContinueEmail={() => { setEmailAuthMode('signup'); setCurrentScreen('email_verify'); }}
+                  onLogIn={() => { setEmailAuthMode('signin'); setCurrentScreen('email_verify'); }}
                   onGoogleCredential={handleGoogleCredential}
                   onGoogleError={showToast}
                   googleBusy={googleBusy}
@@ -728,6 +843,7 @@ export default function App() {
 
               {currentScreen === 'email_verify' && (
                 <EmailVerificationScreen
+                  mode={emailAuthMode}
                   onBack={() => setCurrentScreen('signup')}
                   onVerified={handleEmailVerified}
                 />
@@ -775,6 +891,7 @@ export default function App() {
 
               {currentScreen === 'identity_verify' && (
                 <IdentityVerificationScreen
+                  uniformed={['Military', 'Police', 'Paramilitary'].includes(currentUser?.professionCategory || '')}
                   onBack={() => setCurrentScreen(identityOrigin)}
                   onContinue={() => {
                     void handleUpdateUser({
@@ -790,6 +907,8 @@ export default function App() {
               {currentScreen === 'onboarding_dating' && (
                 <RealDatingOnboardingFlow
                   initialUser={currentUser}
+                  packs={packs}
+                  onBuyPack={(packId) => void handleSelectPack(packId)}
                   onComplete={async (updatedProfile) => {
                     setCurrentUser(updatedProfile);
                     identifyUser(updatedProfile);
@@ -835,6 +954,7 @@ export default function App() {
                   onSwipeLeft={(profile) => { void handleSwipeLeft(profile); setCurrentScreen(profileOrigin); }}
                   onSwipeRight={(profile) => { void handleSwipeRight(profile); setCurrentScreen(profileOrigin); }}
                   onSuperLike={(profile) => { void handleSuperLike(profile); setCurrentScreen(profileOrigin); }}
+                  onStartChat={(profile) => { void handleStartDirectChat(profile, profileOrigin); }}
                 />
               )}
 
@@ -864,6 +984,7 @@ export default function App() {
                   messages={activeMessages}
                   isBlocked={chatPartner ? blockedUserIds.includes(chatPartner.id) : false}
                   credits={credits}
+                  freeChat={Boolean(currentUser.freeChat)}
                   onOpenStore={openStore}
                   onBack={() => setCurrentScreen(chatOrigin)}
                   onSendMessage={handleSendMessage}
@@ -872,6 +993,7 @@ export default function App() {
                   onReportUser={handleReportUser}
                   onUnblockUser={(partner) => void handleUnblockUser(partner.id)}
                   onViewProfile={(partner) => openProfile(partner, 'chat')}
+                  pricing={pricing}
                 />
               )}
 
@@ -943,6 +1065,9 @@ export default function App() {
                 <SubscriptionPlansScreen
                   credits={credits}
                   packs={packs}
+                  freeChat={Boolean(currentUser.freeChat)}
+                  creditRegionSupported={currentUser.creditRegionSupported !== false}
+                  dailyCreditAllowance={currentUser.dailyCreditAllowance ?? 1}
                   onSelectPack={(packId) => void handleSelectPack(packId)}
                   onBoost={() => void handleBoost()}
                   onClose={() => setCurrentScreen('discover')}

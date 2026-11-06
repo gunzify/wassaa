@@ -101,6 +101,29 @@ export async function signInWithGoogleIdToken(idToken: string, nonce: string): P
   return session;
 }
 
+/**
+ * Password accounts. With "Confirm email" enabled in Supabase, sign-up
+ * returns a user but no session until the verification link in that
+ * member's inbox is opened; the link lands back in the app with the
+ * session in the URL fragment, which consumeRedirectSession folds in.
+ */
+export async function signUpWithPassword(email: string, password: string): Promise<{ confirmed: boolean }> {
+  const data = await request<Partial<AuthSession>>('signup', 'POST', { email, password });
+  if ('access_token' in data && data.access_token && data.refresh_token) {
+    writeSession(data as AuthSession);
+    return { confirmed: true };
+  }
+  // Confirmation email is on the way. Auto-confirm deployments return
+  // neither token nor error — treat no tokens as "waiting on the link".
+  return { confirmed: false };
+}
+
+export async function signInWithPassword(email: string, password: string): Promise<AuthSession> {
+  const session = await request<AuthSession>('token?grant_type=password', 'POST', { email, password });
+  writeSession(session);
+  return session;
+}
+
 export async function signOut(): Promise<void> {
   const token = await getAccessToken();
   if (token) { try { await request('logout', 'POST', undefined, token); } catch { /* clear local state even if offline */ } }

@@ -399,9 +399,14 @@ async function main() {
   const creditsSessionA = await api('/auth/session', { token: tokenA });
   const beforeA = Number(creditsSessionA.data?.user?.credits);
   check('A loads a session with a credit balance', creditsSessionA.status === 200 && Number.isFinite(beforeA) && beforeA > 0, `credits=${beforeA}`);
+  // Price comes from the live pricing table (KB §18E) instead of a hardcoded
+  // number, so a pricing change is caught here rather than breaking the suite.
+  const pricing = await api('/billing/entitlements', { token: tokenA });
+  const textCost = Number(pricing.data?.pricing?.text);
+  check('pricing is published to the client', pricing.status === 200 && Number.isFinite(textCost) && textCost > 0, `text=${pricing.data?.pricing?.text}`);
   const sendA = await api(`/matches/${matchId}/messages`, { token: tokenA, method: 'POST', body: { kind: 'text', text: 'hello from A' } });
   check('A sends the first message', sendA.status === 200 && Boolean(sendA.data?.message?.id), `status ${sendA.status}`);
-  check('sending debits exactly 1 credit', Number(sendA.data?.balance) === beforeA - 1, `balance ${sendA.data?.balance} from ${beforeA}`);
+  check('sending debits the published text price', Number(sendA.data?.balance) === beforeA - textCost, `balance ${sendA.data?.balance} from ${beforeA} at ${textCost}/text`);
   const fetchB = await api(`/matches/${matchId}/messages`, { token: tokenB });
   check('B receives A message', fetchB.status === 200 && (fetchB.data?.messages || []).some((m) => m.text === 'hello from A'));
   check('conversation payload leaks no persona markers',
@@ -410,7 +415,7 @@ async function main() {
   const beforeB = Number(creditsSessionB.data?.user?.credits);
   const sendB = await api(`/matches/${matchId}/messages`, { token: tokenB, method: 'POST', body: { kind: 'text', text: 'reply from B' } });
   check('B replies', sendB.status === 200, `status ${sendB.status}`);
-  check('a real member replying also pays 1 credit', Number(sendB.data?.balance) === beforeB - 1, `balance ${sendB.data?.balance} from ${beforeB}`);
+  check('a real member replying also pays the published text price', Number(sendB.data?.balance) === beforeB - textCost, `balance ${sendB.data?.balance} from ${beforeB} at ${textCost}/text`);
   const fetchA = await api(`/matches/${matchId}/messages`, { token: tokenA });
   check('A receives B reply', fetchA.status === 200 && (fetchA.data?.messages || []).some((m) => m.text === 'reply from B'));
   const stranger = await api('/matches/00000000-0000-0000-0000-000000000000/messages', { token: tokenA });

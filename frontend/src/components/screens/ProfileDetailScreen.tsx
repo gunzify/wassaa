@@ -1,9 +1,10 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ChevronLeft,
-  Heart,
   X,
+  Heart,
   Star,
+  Send,
   MapPin,
   Briefcase,
   GraduationCap,
@@ -14,7 +15,8 @@ import {
   Cigarette,
   PawPrint,
   HeartHandshake,
-  Compass
+  Compass,
+  Maximize2
 } from 'lucide-react';
 import { UserProfile } from '../../types';
 import { VerifiedMark } from '../common/VerifiedMark';
@@ -26,6 +28,8 @@ interface ProfileDetailScreenProps {
   onSwipeLeft: (profile: UserProfile) => void;
   onSwipeRight: (profile: UserProfile) => void;
   onSuperLike: (profile: UserProfile) => void;
+  /** Cold open: start a chat without matching first (credits apply per message). */
+  onStartChat?: (profile: UserProfile) => void;
 }
 
 /**
@@ -37,10 +41,39 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
   onBack,
   onSwipeLeft,
   onSwipeRight,
-  onSuperLike
+  onSuperLike,
+  onStartChat
 }) => {
   const [photoIndex, setPhotoIndex] = useState(0);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
+  const lightboxRef = useRef<HTMLDivElement>(null);
   const galleryRef = useRef<HTMLDivElement>(null);
+
+  // Fullscreen gallery follows Escape, and the lightbox scroll keeps its own
+  // position independent of the inline hero.
+  useEffect(() => {
+    if (!lightboxOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightboxOpen(false); };
+    window.addEventListener('keydown', onKey);
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = '';
+    };
+  }, [lightboxOpen]);
+
+  const openGallery = () => {
+    if (!photos.length) return;
+    setLightboxIndex(photoIndex);
+    setLightboxOpen(true);
+  };
+
+  // Re-sync the lightbox scroll when it is (re)opened.
+  useEffect(() => {
+    if (!lightboxOpen || !lightboxRef.current) return;
+    lightboxRef.current.scrollTo({ left: lightboxIndex * lightboxRef.current.clientWidth, behavior: 'auto' });
+  }, [lightboxOpen, lightboxIndex]);
 
   if (!profile) return null;
 
@@ -86,8 +119,18 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="mx-auto w-full max-w-[34rem] px-4 pb-36 pt-3">
-          {/* Photo hero */}
+          {/* Photo hero — taps open the full gallery (below) */}
           <div className="relative overflow-hidden rounded-[1.75rem] bg-black shadow-card">
+            {photos.length > 1 && (
+              <button
+                type="button"
+                onClick={openGallery}
+                aria-label="View gallery"
+                className="absolute right-3 top-7 z-20 flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/40 text-white/85 backdrop-blur-md transition-colors hover:bg-black/60"
+              >
+                <Maximize2 className="h-4 w-4" />
+              </button>
+            )}
             {photos.length ? (
               <div
                 ref={galleryRef}
@@ -240,6 +283,55 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
         </div>
       </div>
 
+      {/* Fullscreen photo gallery — one image per member-uploaded photo */}
+      {lightboxOpen && photos.length > 0 && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-black/95 backdrop-blur-sm">
+          <div className="flex items-center justify-between px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-2">
+            <span className="font-['Space_Mono',monospace] text-xs tracking-widest text-white/70">
+              {lightboxIndex + 1} / {photos.length}
+            </span>
+            <button
+              type="button"
+              onClick={() => setLightboxOpen(false)}
+              aria-label="Close gallery"
+              className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white transition-colors hover:bg-white/20"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+          <div
+            ref={lightboxRef}
+            onScroll={(event) => {
+              const el = event.currentTarget;
+              const next = Math.round(el.scrollLeft / Math.max(el.clientWidth, 1));
+              if (next !== lightboxIndex && next >= 0 && next < photos.length) setLightboxIndex(next);
+            }}
+            className="min-h-0 flex-1 snap-x snap-mandatory overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            aria-label={`${profile.name}'s gallery`}
+          >
+            {photos.map((photo, index) => (
+              <img
+                key={`lb-${photo}-${index}`}
+                src={photo}
+                alt={`${profile.name}, photo ${index + 1}`}
+                className="h-full w-full shrink-0 snap-center object-contain"
+                referrerPolicy="no-referrer"
+              />
+            ))}
+          </div>
+          {photos.length > 1 && (
+            <div className="pointer-events-none flex items-center justify-center gap-1.5 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
+              {photos.map((_, index) => (
+                <span
+                  key={`lb-dot-${index}`}
+                  className={`h-1.5 w-1.5 rounded-full transition-all ${index === lightboxIndex ? 'bg-white' : 'bg-white/30'}`}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Actions */}
       <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
         <div className="pointer-events-auto flex items-center gap-5 rounded-full border border-line bg-surface/90 px-5 py-2.5 shadow-raised backdrop-blur-xl">
@@ -261,6 +353,17 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
           >
             <Star className="h-5 w-5" />
           </button>
+          {onStartChat && (
+            <button
+              type="button"
+              onClick={() => onStartChat(profile)}
+              className="flex h-12 w-12 items-center justify-center rounded-full border border-line bg-surface text-brand transition-colors hover:border-brand/40 hover:bg-brand-tint"
+              aria-label="Message"
+              title="Message directly (credits apply)"
+            >
+              <Send className="h-5 w-5" />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onSwipeRight(profile)}

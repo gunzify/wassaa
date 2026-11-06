@@ -22,6 +22,10 @@ test('onboarding requires every minimum field and an adult member', () => {
   assert.equal(isOnboardingComplete({ ...completeProfile, birth_date: '2010-01-01' }, now), false);
   assert.equal(isOnboardingComplete({ ...completeProfile, photos: ['one'] }, now), false);
   assert.equal(isOnboardingComplete({ ...completeProfile, match_preferences: { gender: 'men', minAge: 45, maxAge: 25 } }, now), false);
+  // Military, paramilitary and law enforcement submit no job title.
+  assert.equal(isOnboardingComplete({ ...completeProfile, profession_category: 'Military', profession_title: '' }, now), true);
+  // Civilians still need one.
+  assert.equal(isOnboardingComplete({ ...completeProfile, profession_category: 'Tech', profession_title: '' }, now), false);
 });
 
 test('great-circle distance handles known and identical points', () => {

@@ -3,7 +3,7 @@
   'use strict';
 
   var API_ROOT = 'https://avlbsficfejvwokxkgyl.supabase.co/functions/v1/api';
-  var state = { accessToken: '', refreshToken: '', expiresAt: 0, publishableKey: '', admin: '', tab: 'verifications', queue: [], reports: [], appeals: [], threads: [], npcs: [], audit: [], storage: false };
+  var state = { accessToken: '', refreshToken: '', expiresAt: 0, publishableKey: '', admin: '', tab: 'verifications', queue: [], reports: [], appeals: [], threads: [], npcs: [], audit: [], storage: false, npcOffset: 0, npcTotal: 0, overview: null, facets: null };
 
   var $ = function (sel) { return document.querySelector(sel); };
   var gate = $('#gate');
@@ -161,18 +161,76 @@
   $('#reports-filter').addEventListener('change', loadReports);
   $('#appeals-filter').addEventListener('change', loadAppeals);
   $('#threads-filter').addEventListener('change', loadThreads);
-  $('#npc-search-btn').addEventListener('click', loadNpcs);
-  $('#npc-search').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadNpcs(); });
+  $('#threads-paid').addEventListener('change', loadThreads);
+  $('#npc-search-btn').addEventListener('click', function () { loadNpcs(true); });
+  $('#npc-search').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadNpcs(true); });
+  ['#npc-country', '#npc-class', '#npc-service', '#npc-gender', '#npc-active'].forEach(function (sel) {
+    $(sel).addEventListener('change', function () { loadNpcs(true); });
+  });
+  $('#npc-clear').addEventListener('click', function () {
+    ['#npc-search', '#npc-country', '#npc-class', '#npc-service', '#npc-gender', '#npc-active'].forEach(function (sel) { $(sel).value = ''; });
+    loadNpcs(true);
+  });
+  $('#npc-more').addEventListener('click', function () { loadNpcs(false); });
 
   // ---------- loading ----------
   function loadAll() {
     loadSession();
+    loadOverview();
+    loadFacets();
     loadQueue();
     loadReports();
     loadAppeals();
     loadThreads();
-    if (state.tab === 'npcs') loadNpcs();
+    if (state.tab === 'npcs') loadNpcs(true);
     if (state.tab === 'audit') loadAudit();
+  }
+
+  // Header strip: every queue that needs a human, plus persona/paid counts.
+  function loadOverview() {
+    api('/overview').then(function (json) {
+      state.overview = json;
+      renderOverview(json);
+    }).catch(function () { /* header stays empty until sign-in completes */ });
+  }
+
+  function renderOverview(o) {
+    var box = $('#overview');
+    if (!box) return;
+    var cards = [
+      { key: 'verifications', label: 'Verifications', value: o.pendingVerifications, alert: o.pendingVerifications > 0 },
+      { key: 'reports', label: 'Open reports', value: o.openReports, alert: o.openReports > 0 },
+      { key: 'appeals', label: 'Appeals', value: o.pendingAppeals, alert: o.pendingAppeals > 0 },
+      { key: 'threads', label: 'Team threads', value: o.adminOwnedThreads, alert: false },
+      { key: 'threads', label: 'Paid members', value: o.paidMembers, alert: false },
+      { key: 'npcs', label: 'Personas', value: o.personas, alert: false },
+      { key: 'npcs', label: 'Active personas', value: o.activePersonas, alert: false }
+    ];
+    box.innerHTML = cards.map(function (c) {
+      return '<button type="button" class="card' + (c.alert ? ' alert' : '') + '" data-goto="' + c.key + '">' +
+        '<b>' + esc(c.value == null ? '—' : c.value) + '</b><span>' + esc(c.label) + '</span></button>';
+    }).join('');
+    box.querySelectorAll('[data-goto]').forEach(function (card) {
+      card.addEventListener('click', function () {
+        var tab = document.querySelector('.tab[data-tab="' + card.getAttribute('data-goto') + '"]');
+        if (tab) tab.click();
+      });
+    });
+  }
+
+  // Populate the persona filter menus from the deck itself.
+  function loadFacets() {
+    api('/npc-facets').then(function (json) {
+      state.facets = json;
+      var country = $('#npc-country');
+      var service = $('#npc-service');
+      country.innerHTML = '<option value="">All countries</option>' + (json.countries || []).map(function (c) {
+        return '<option value="' + esc(c.name) + '">' + esc(c.name) + ' (' + c.count + ')</option>';
+      }).join('');
+      service.innerHTML = '<option value="">All services</option>' + (json.services || []).map(function (s) {
+        return '<option value="' + esc(s.name) + '">' + esc(s.name) + ' (' + s.count + ')</option>';
+      }).join('');
+    }).catch(function () { /* filters stay as-is */ });
   }
 
   function loadSession() {
@@ -224,20 +282,50 @@
   function loadThreads() {
     var box = $('#threads');
     var filter = $('#threads-filter').value;
-    api('/threads' + (filter ? '?state=' + encodeURIComponent(filter) : '')).then(function (json) {
+    var paid = $('#threads-paid').value;
+    var query = [];
+    if (filter) query.push('state=' + encodeURIComponent(filter));
+    if (paid) query.push('paid=' + encodeURIComponent(paid));
+    api('/threads' + (query.length ? '?' + query.join('&') : '')).then(function (json) {
       state.threads = json.threads || [];
       $('#count-threads').textContent = String(state.threads.length);
+      var paidCount = $('#threads-paid-count');
+      if (paidCount) paidCount.textContent = (json.paidCount || 0) + ' paid';
       renderThreads(box);
     }).catch(function (err) {
       box.innerHTML = '<div class="empty">' + esc(err.message) + '</div>';
     });
   }
 
-  function loadNpcs() {
+  function npcQuery(offset) {
+    var params = [];
+    var push = function (key, sel) {
+      var value = ($(sel).value || '').trim();
+      if (value) params.push(key + '=' + encodeURIComponent(value));
+    };
+    push('search', '#npc-search');
+    push('country', '#npc-country');
+    push('class', '#npc-class');
+    push('service', '#npc-service');
+    push('gender', '#npc-gender');
+    push('active', '#npc-active');
+    params.push('limit=60');
+    params.push('offset=' + offset);
+    return '/npcs?' + params.join('&');
+  }
+
+  function loadNpcs(reset) {
+    if (reset === undefined) reset = true;
     var box = $('#npcs');
-    var search = ($('#npc-search').value || '').trim();
-    api('/npcs' + (search ? '?search=' + encodeURIComponent(search) : '')).then(function (json) {
-      state.npcs = json.npcs || [];
+    var offset = reset ? 0 : state.npcOffset;
+    if (reset) box.innerHTML = '<div class="empty">Loading personas…</div>';
+    api(npcQuery(offset)).then(function (json) {
+      var rows = json.npcs || [];
+      state.npcTotal = json.total || rows.length;
+      state.npcOffset = offset + rows.length;
+      state.npcs = reset ? rows : state.npcs.concat(rows);
+      $('#npc-count').textContent = state.npcs.length + ' of ' + state.npcTotal + ' personas';
+      $('#npc-more').classList.toggle('hidden', state.npcOffset >= state.npcTotal);
       renderNpcs(box);
     }).catch(function (err) {
       box.innerHTML = '<div class="empty">' + esc(err.message) + '</div>';
@@ -267,7 +355,7 @@
           '<div class="card-head">' +
             '<div class="who"><strong>' + esc(p.name || 'Unknown member') + '</strong>' +
               '<span>' + esc(p.professionTitle || p.professionCategory || '') + ' · ' + esc(p.city || '') + '</span></div>' +
-            '<div class="doc">' + esc(item.documentType) + ' · <b>' + esc(item.documentNumberMasked) + '</b><br />' + esc(fmtDate(item.submittedAt)) + '</div>' +
+            '<div class="doc">' + esc(item.documentType) + (item.documentNumberMasked ? ' · <b>' + esc(item.documentNumberMasked) + '</b>' : '') + '<br />' + esc(fmtDate(item.submittedAt)) + '</div>' +
           '</div>' +
           '<div class="media">' +
             '<figure>' + (item.idDocUrl
@@ -285,10 +373,11 @@
             '<div class="fact"><span>Gender</span><b>' + esc(p.gender || '—') + '</b></div>' +
             '<div class="fact"><span>Phone</span><b>' + esc(p.phone || '—') + '</b></div>' +
             '<div class="fact"><span>Location</span><b>' + esc([p.city, p.state].filter(Boolean).join(', ') || '—') + '</b></div>' +
+            '<div class="fact"><span>Region</span><b>' + esc(p.countryCode || 'NG') + (p.regionAttestedCode && p.regionAttestedCode === p.countryCode ? ' · attested' : '') + '</b></div>' +
           '</div>' +
           '<div class="decision">' +
             '<input type="text" maxlength="300" placeholder="Review note (reason if rejecting)" data-note />' +
-            '<button class="btn approve" data-action="approve" type="button">Approve</button>' +
+            '<button class="btn approve" data-action="approve" type="button" title="Approving also attests the member\'s region for free-chat eligibility">Approve</button>' +
             '<button class="btn reject" data-action="reject" type="button">Reject</button>' +
           '</div>' +
         '</article>'
@@ -379,9 +468,16 @@
         '<article class="card" data-thread="' + esc(t.id) + '">' +
           '<div class="card-head">' +
             '<div class="who"><strong>' + esc(t.npc.name) + ' ↔ ' + esc(t.member.name) + '</strong>' +
-              '<span>' + esc(t.autoSpent || 0) + ' auto-replies used · ' + esc(fmtDate(t.createdAt)) + '</span></div>' +
+              '<span>' + esc(t.autoSpent || 0) + ' auto-replies used · ' + esc(fmtDate(t.lastMessageAt || t.createdAt)) + '</span>' +
+              '<span class="flagline">' +
+                (t.paid ? '<span class="badge-paid">paid member</span>' : '') +
+                (t.member.verified ? '<span class="badge">verified</span>' : '') +
+                '<span class="badge">' + esc(t.member.countryCode || 'NG') + '</span>' +
+                (t.creditsBought ? '<span class="badge">' + esc(t.creditsBought) + ' credits bought</span>' : '') +
+              '</span></div>' +
             '<div class="doc"><span class="state ' + esc(t.autoState) + '">' + esc(t.autoState.replace('_', ' ')) + '</span>' +
-              (t.takenOverBy ? '<br />operated by your team' : '') + '</div>' +
+              (t.takenOverBy ? '<br />operated by your team' : '') +
+              (t.purchasedAt ? '<br />paid ' + esc(fmtDate(t.purchasedAt)) : '') + '</div>' +
           '</div>' +
           '<div class="decision">' +
             '<button class="btn" data-action="open-thread" type="button">Open conversation</button>' +
@@ -400,16 +496,22 @@
     }
     box.innerHTML = state.npcs.map(function (n) {
       var photo = (n.photos || [])[0];
+      var persona = n.persona || {};
+      var flags = [n.countryCode || 'NG', n.classOfService || n.professionCategory, persona.branch ? persona.branch + ' branch' : '', persona.race || ''].filter(Boolean);
+      // `awaiting_upload` means the auto-dealer had no spare face for this
+      // persona; it stays out of discovery until a photo is uploaded.
+      var needsPhoto = persona.photoState === 'awaiting_upload';
       return (
         '<article class="npc" data-npc="' + esc(n.id) + '">' +
           '<div class="cover">' + (photo
             ? '<img src="' + esc(photo) + '" alt="" data-zoom="' + esc(photo) + '" />'
             : '<div class="none">No photo</div>') + '</div>' +
           '<div class="body">' +
-            '<strong>' + esc(n.name) + (n.active ? '' : ' <span class="badge">paused</span>') + '</strong>' +
+            '<strong>' + esc(n.name) + (n.active ? '' : ' <span class="badge">paused</span>') + (needsPhoto ? ' <span class="badge">needs photo</span>' : '') + '</strong>' +
             '<span class="meta">' + esc(n.age || '—') + ' · ' + esc([n.city, n.state].filter(Boolean).join(', ')) + '</span>' +
-            '<span>' + esc([n.orgRole, n.skill, n.professionTitle].filter(Boolean).join(' · ') || n.professionCategory || '') + '</span>' +
-            '<span>' + esc((n.verified === undefined ? n.verificationStatus : n.verificationStatus) || '') + ' · greeter: ' + esc(n.persona && n.persona.greeter ? 'yes' : 'no') + '</span>' +
+            '<span class="flagline">' + flags.map(function (f) { return '<span class="badge">' + esc(f) + '</span>'; }).join('') + '</span>' +
+            '<span>' + esc([n.service, n.orgRole, n.skill].filter(Boolean).join(' · ') || n.professionCategory || '') + '</span>' +
+            '<span>' + esc(n.verificationStatus || '') + ' · greeter: ' + esc(persona.greeter ? 'yes' : 'no') + '</span>' +
             '<div class="actions">' +
               '<button class="btn" data-action="npc-edit" type="button">Edit</button>' +
               '<button class="btn" data-action="npc-photos" type="button">Photos</button>' +
@@ -651,11 +753,14 @@
       field('birthDate', 'Date of birth', n.birthDate, 'YYYY-MM-DD') +
       selectField('gender', 'Gender', n.gender, [['female', 'Female'], ['male', 'Male']]) +
       field('pronouns', 'Pronouns', n.pronouns, 'she/her, he/him') +
+      field('countryCode', 'Country code', n.countryCode, 'US, GB, NG…') +
       section('Service & work', 'Cadre replaces rank entirely.') +
       selectField('professionCategory', 'Category', n.professionCategory, NPC_CATEGORIES.map(function (c) { return [c, c]; })) +
       field('professionTitle', 'Job title / trade', n.professionTitle, 'e.g. Software Engineer') +
       field('companyOrOrg', 'Employer / organisation', n.companyOrOrg, 'e.g. Lagos State Teaching Hospital') +
-      field('service', 'Service', n.service, 'Nigerian Army, FRSC…') +
+      field('service', 'Service', n.service, 'US Army, Metropolitan Police…') +
+      field('branch', 'Branch', (n.persona || {}).branch, 'Army / Navy / Air Force / Marines') +
+      field('race', 'Photo pool', (n.persona || {}).race, 'white, black, hispanic…') +
       selectField('orgRole', 'Cadre', n.orgRole, [['', '— none (civilian) —'], ['officer', 'Commissioned (officer)'], ['soldier', 'Non-commissioned (soldier)']]) +
       field('skill', 'Trade / skill', n.skill, 'Nursing / Medical') +
       field('dutyStation', 'Duty station', n.dutyStation, 'Optional') +
@@ -736,6 +841,11 @@
       var interests = (sheet.querySelector('#npc-interests').value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
       var persona = Object.assign({}, n.persona || {}, { greeter: sheet.querySelector('#npc-greeter').checked });
       var value = function (key) { var el = sheet.querySelector('#npc-' + key); return el ? (el.value || '').trim() : ''; };
+      // Branch and photo pool live in the persona document, not as columns.
+      var branch = value('branch');
+      var race = value('race');
+      if (branch) persona.branch = branch; else delete persona.branch;
+      if (race) persona.race = race; else delete persona.race;
       var prompts = [];
       for (var pj = 0; pj < 3; pj++) {
         var question = value('prompt-q-' + pj);
@@ -760,6 +870,7 @@
           almaMater: value('almaMater'),
           city: value('city'),
           state: value('state'),
+          countryCode: value('countryCode').toUpperCase(),
           bio: value('bio'),
           datingGoal: value('datingGoal'),
           verificationStatus: value('verificationStatus'),

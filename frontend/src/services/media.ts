@@ -1,6 +1,23 @@
 const MAX_EDGE = 1600;
 const MAX_BYTES = 650 * 1024;
 
+/**
+ * Warm the browser cache for photos the member is about to see (the next card
+ * or two). Fire-and-forget: a failed preload only means the image loads when it
+ * is actually shown.
+ */
+export function preloadImages(urls: Array<string | undefined>, limit = 3): void {
+  if (typeof window === 'undefined') return;
+  const warmed = new Set<string>();
+  for (const url of urls) {
+    if (!url || warmed.has(url) || warmed.size >= limit) continue;
+    warmed.add(url);
+    const image = new Image();
+    image.decoding = 'async';
+    image.src = url;
+  }
+}
+
 /** Resize member photos before upload so both R2 and the development inline
  * fallback stay within predictable transfer and request-body limits. */
 export async function preparePhoto(file: File): Promise<File> {

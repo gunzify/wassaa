@@ -307,7 +307,9 @@ async function main() {
   check('queue carries the profile facts a reviewer compares against',
     Boolean(queued?.profile?.name) && Boolean(queued?.profile?.birthDate) && queued?.profile?.age > 0,
     `name=${queued?.profile?.name} age=${queued?.profile?.age}`);
-  check('masked document number is shown, raw number never is', Boolean(queued?.documentNumberMasked) && !JSON.stringify(queued).includes('12345678901'));
+  // Deliberate privacy decision (KB 2026-11-05): no document number is
+  // captured, stored, or shown. The raw value must never appear in the queue.
+  check('no document number is captured or shown', !JSON.stringify(queued).includes('12345678901') && !queued?.documentNumberMasked);
   check('ID document is exposed as a signed private URL', /^https:\/\//.test(queued?.idDocUrl || '') && /X-Amz-Signature/i.test(queued?.idDocUrl || ''));
   check('selfie is exposed as a signed private URL', /^https:\/\//.test(queued?.selfieUrl || '') && /X-Amz-Signature/i.test(queued?.selfieUrl || ''));
 

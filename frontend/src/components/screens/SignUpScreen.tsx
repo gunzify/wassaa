@@ -32,8 +32,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onBack, onContinueEm
           Find a connection that feels right.
         </h1>
         <p className="font-['Plus_Jakarta_Sans',sans-serif] text-[0.9375rem] text-[#6B665F] mt-2.5 leading-relaxed">
-          WASSAA brings uniformed members and thoughtful professionals together. Start with a verified email — adding a
-          phone number later is up to you.
+          WASSAA brings uniformed members and thoughtful professionals together. Start with an email you can verify.
         </p>
       </div>
 
@@ -63,7 +62,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onBack, onContinueEm
 
       <p className="mt-5 flex items-start gap-2 text-[0.875rem] text-[#6B665F] leading-relaxed">
         <ShieldCheck className="w-4 h-4 text-[#2C6B56] shrink-0 mt-0.5" />
-        We email a six-digit code to confirm it’s you. No password to remember, and your email is never shown to other
+        Choose a password and we email you a verification link to confirm it's you. Your email is never shown to other
         members.
       </p>
 

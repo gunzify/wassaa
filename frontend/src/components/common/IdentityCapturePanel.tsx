@@ -1,70 +1,115 @@
-import React, { useState } from 'react';
-import { Camera, Check, CreditCard, RefreshCw, ShieldCheck, Upload, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Camera, Check, CreditCard, Image as ImageIcon, RefreshCw, ShieldCheck, X } from 'lucide-react';
 import { WassaaApi } from '../../services/api';
 
-const DOCUMENT_TYPES = [
-  { id: 'NIN', label: 'National Identification Number (NIN Slip / Card)' },
-  { id: 'Passport', label: 'Nigerian International Passport' },
-  { id: 'ServiceID', label: 'Official Service / Professional ID' },
+/** Uniformed members submit their service ID; civilians pick a government ID. */
+const CIVILIAN_DOCUMENT_TYPES = [
+  { id: 'NIN', label: 'National ID (NIN slip or card)' },
+  { id: 'Passport', label: 'International passport' },
+  { id: 'DriversLicense', label: "Driver's licence" },
+] as const;
+const UNIFORMED_DOCUMENT_TYPES = [
+  { id: 'ServiceID', label: 'Military / Force ID' },
 ] as const;
 
 interface IdentityCapturePanelProps {
-  /** Fires once the review queue accepts the submission. */
+  /** Fires once the submission is accepted. */
   onSubmitted?: () => void;
   /** Server-side state, so a returning member sees their real status instead of the form. */
   status?: 'not_started' | 'pending' | 'verified';
+  /** Military, paramilitary or law-enforcement member — a force ID is expected. */
+  uniformed?: boolean;
 }
 
 /**
- * Government ID + live selfie capture, shared by the onboarding verification
- * step and the Settings "Get verified" screen. Both images go straight to
- * private object storage; only the object keys reach the API.
+ * ID + live selfie capture, shared by the onboarding verification step and the
+ * Settings "Get verified" screen. The ID is uploaded from the member's
+ * gallery; the selfie is taken strictly through the device camera. Both images
+ * go straight to private object storage; only the object keys reach the API.
  */
-export const IdentityCapturePanel: React.FC<IdentityCapturePanelProps> = ({ onSubmitted, status = 'not_started' }) => {
+export const IdentityCapturePanel: React.FC<IdentityCapturePanelProps> = ({ onSubmitted, status = 'not_started', uniformed = false }) => {
+  const DOCUMENT_TYPES = uniformed ? UNIFORMED_DOCUMENT_TYPES : CIVILIAN_DOCUMENT_TYPES;
   const [hasId, setHasId] = useState(false);
   const [hasSelfie, setHasSelfie] = useState(false);
   const [activeModal, setActiveModal] = useState<'id' | 'selfie' | null>(null);
 
-  const [selectedDoc, setSelectedDoc] = useState<'NIN' | 'Passport' | 'ServiceID'>('NIN');
-  const [documentNumber, setDocumentNumber] = useState('');
+  const [selectedDoc, setSelectedDoc] = useState<string>(uniformed ? 'ServiceID' : 'NIN');
   const [idDocDataUrl, setIdDocDataUrl] = useState<string | null>(null);
   const [selfieDataUrl, setSelfieDataUrl] = useState<string | null>(null);
-  // Kept so the original file can be uploaded straight to object storage.
+  // Kept so the original files can be uploaded straight to object storage.
   const [idDocFile, setIdDocFile] = useState<File | null>(null);
   const [selfieFile, setSelfieFile] = useState<File | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [isScanningId, setIsScanningId] = useState(false);
 
-  const [selfieStage, setSelfieStage] = useState<'look' | 'turn' | 'smile' | 'complete'>('look');
-  const [isCapturingSelfie, setIsCapturingSelfie] = useState(false);
+  // Strict-camera selfie: getUserMedia + a canvas snap. No file picker.
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [cameraBusy, setCameraBusy] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+
+  const stopCamera = () => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+  };
+  const startCamera = async () => {
+    if (streamRef.current) return;
+    setCameraError(null);
+    setCameraBusy(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => undefined);
+      }
+    } catch {
+      setCameraError('Camera unavailable. Allow camera access and try again.');
+    } finally {
+      setCameraBusy(false);
+    }
+  };
+  useEffect(() => {
+    if (activeModal === 'selfie') void startCamera();
+    else stopCamera();
+    return stopCamera;
+  }, [activeModal]);
 
   const handleIdFile = (file: File) => {
     setIdDocFile(file);
     const reader = new FileReader();
     reader.onload = () => {
       setIdDocDataUrl(String(reader.result));
-      setIsScanningId(false);
       setHasId(true);
       setActiveModal(null);
     };
-    reader.onerror = () => setIsScanningId(false);
+    reader.onerror = () => setActiveModal(null);
     reader.readAsDataURL(file);
   };
 
-  const handleSelfieFile = (file: File) => {
-    setSelfieFile(file);
-    const reader = new FileReader();
-    reader.onload = () => {
-      setSelfieDataUrl(String(reader.result));
-      setIsCapturingSelfie(false);
-      setSelfieStage('complete');
-      setHasSelfie(true);
-      setTimeout(() => setActiveModal(null), 700);
-    };
-    reader.onerror = () => setIsCapturingSelfie(false);
-    reader.readAsDataURL(file);
+  const snapSelfie = () => {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const file = new File([blob], 'selfie.jpg', { type: 'image/jpeg' });
+      setSelfieFile(file);
+      const reader = new FileReader();
+      reader.onload = () => {
+        setSelfieDataUrl(String(reader.result));
+        setHasSelfie(true);
+        stopCamera();
+        setActiveModal(null);
+      };
+      reader.readAsDataURL(file);
+    }, 'image/jpeg', 0.9);
   };
 
   const handleSubmit = async () => {
@@ -75,12 +120,12 @@ export const IdentityCapturePanel: React.FC<IdentityCapturePanelProps> = ({ onSu
     setSubmitting(true);
     setSubmitError(null);
     try {
-      if (!idDocFile || !selfieFile) throw new Error('Capture or select both images again before submitting.');
+      if (!idDocFile || !selfieFile) throw new Error('Capture both images again before submitting.');
       const [idDocKey, selfieKey] = await Promise.all([
         WassaaApi.uploadImage('id_doc', idDocFile),
         WassaaApi.uploadImage('selfie', selfieFile)
       ]);
-      await WassaaApi.submitVerification({ documentType: selectedDoc, documentNumber, idDocKey, selfieKey });
+      await WassaaApi.submitVerification({ documentType: selectedDoc, documentNumber: '', idDocKey, selfieKey });
 
       setIdDocDataUrl(null);
       setSelfieDataUrl(null);
@@ -118,12 +163,10 @@ export const IdentityCapturePanel: React.FC<IdentityCapturePanelProps> = ({ onSu
           </div>
           <div className="min-w-0">
             <p className="text-sm font-semibold text-[#1A1816]">
-              {verified ? "You're verified" : 'Submitted for review'}
+              {verified ? "You're verified" : 'Verification submitted'}
             </p>
             <p className="mt-1 text-xs text-[#6B665F] leading-relaxed">
-              {verified
-                ? 'Your identity badge is active on your profile.'
-                : 'A reviewer compares your selfie with your ID, usually within 24 hours. Your documents are purged the moment a decision is recorded.'}
+              {verified ? 'Your identity badge is active on your profile.' : 'Your badge appears on your profile once verification completes.'}
             </p>
           </div>
         </div>
@@ -134,7 +177,7 @@ export const IdentityCapturePanel: React.FC<IdentityCapturePanelProps> = ({ onSu
   return (
     <>
       <div className="space-y-3">
-        {/* Government ID */}
+        {/* ID card */}
         <button
           type="button"
           onClick={() => setActiveModal('id')}
@@ -146,10 +189,10 @@ export const IdentityCapturePanel: React.FC<IdentityCapturePanelProps> = ({ onSu
             </span>
             <span className="min-w-0">
               <span className="text-[0.9375rem] font-semibold text-[#1A1816] block">
-                Government ID
+                {uniformed ? 'Service ID' : 'Government ID'}
               </span>
               <span className="text-xs text-[#6B665F] block truncate">
-                NIN, Passport or Official ID
+                {uniformed ? 'Military or force ID' : 'National ID, passport or licence'}
               </span>
             </span>
           </span>
@@ -171,11 +214,11 @@ export const IdentityCapturePanel: React.FC<IdentityCapturePanelProps> = ({ onSu
                 Live selfie
               </span>
               <span className="text-xs text-[#6B665F] block truncate">
-                Front-facing camera capture
+                Taken with your camera — not uploaded
               </span>
             </span>
           </span>
-          {statusPill(hasSelfie, 'Add', 'Captured')}
+          {statusPill(hasSelfie, 'Take', 'Captured')}
         </button>
       </div>
 
@@ -191,16 +234,16 @@ export const IdentityCapturePanel: React.FC<IdentityCapturePanelProps> = ({ onSu
         disabled={submitting || !hasId || !hasSelfie}
         className="mt-4 w-full min-h-[52px] py-3.5 px-6 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] disabled:bg-[#EFEAE4] disabled:text-[#9C958D] disabled:cursor-not-allowed text-white font-semibold text-[0.9375rem] transition-all shadow-[0_1px_3px_rgba(0,0,0,0.06)] active:scale-[0.985]"
       >
-        {submitting ? 'Submitting for review…' : 'Submit for review'}
+        {submitting ? 'Submitting…' : 'Submit verification'}
       </button>
 
-      {/* Modal: ID upload */}
+      {/* Modal: ID upload (gallery) */}
       {activeModal === 'id' && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white rounded-t-3xl sm:rounded-2xl p-6 sm:p-8 border border-[#E8E4DC] shadow-[0_8px_32px_-4px_rgba(0,0,0,0.12)] w-full max-w-lg max-h-[92dvh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#E8E4DC]">
               <h3 className="font-['Cormorant_Garamond',serif] text-2xl font-semibold text-[#1A1816]">
-                Upload Government ID
+                {uniformed ? 'Your service ID' : 'Your ID'}
               </h3>
               <button
                 type="button"
@@ -212,74 +255,52 @@ export const IdentityCapturePanel: React.FC<IdentityCapturePanelProps> = ({ onSu
               </button>
             </div>
 
-            <p className="text-xs text-[#6B665F] mb-4 leading-relaxed">
-              Select your document type, add its number (masked for reviewers), then capture or upload a clear photo.
-            </p>
-
-            <div className="space-y-2.5 mb-4">
-              {DOCUMENT_TYPES.map((doc) => (
-                <button
-                  key={doc.id}
-                  type="button"
-                  onClick={() => setSelectedDoc(doc.id)}
-                  className={`w-full min-h-[52px] p-3 rounded-xl border text-left transition-all flex items-center justify-between gap-3 text-[0.8125rem] sm:text-sm ${
-                    selectedDoc === doc.id
-                      ? 'border-[#B85A3C] bg-[#F5EAE5]/60 text-[#1A1816] font-semibold'
-                      : 'border-[#E8E4DC] bg-white text-[#6B665F] hover:border-[#B85A3C]/40'
-                  }`}
-                >
-                  <span>{doc.label}</span>
-                  {selectedDoc === doc.id && <Check className="w-4 h-4 text-[#B85A3C] shrink-0" />}
-                </button>
-              ))}
-            </div>
-
-            <input
-              type="text"
-              inputMode="numeric"
-              placeholder="Document number (stored masked)"
-              value={documentNumber}
-              onChange={(e) => setDocumentNumber(e.target.value.replace(/\s/g, '').slice(0, 20))}
-              className="w-full min-h-[48px] mb-4 py-3 px-3.5 rounded-xl border border-[#E8E4DC] text-sm text-[#1A1816] outline-none focus:border-[#B85A3C] focus:ring-2 focus:ring-[#B85A3C]/20 bg-[#F7F5F0]/40"
-            />
+            {DOCUMENT_TYPES.length > 1 && (
+              <div className="space-y-2.5 mb-4">
+                {DOCUMENT_TYPES.map((doc) => (
+                  <button
+                    key={doc.id}
+                    type="button"
+                    onClick={() => setSelectedDoc(doc.id)}
+                    className={`w-full min-h-[52px] p-3 rounded-xl border text-left transition-all flex items-center justify-between gap-3 text-[0.8125rem] sm:text-sm ${
+                      selectedDoc === doc.id
+                        ? 'border-[#B85A3C] bg-[#F5EAE5]/60 text-[#1A1816] font-semibold'
+                        : 'border-[#E8E4DC] bg-white text-[#6B665F] hover:border-[#B85A3C]/40'
+                    }`}
+                  >
+                    <span>{doc.label}</span>
+                    {selectedDoc === doc.id && <Check className="w-4 h-4 text-[#B85A3C] shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <input
               id="wassaa-id-file"
               type="file"
               accept="image/*"
-              capture="environment"
               className="hidden"
               onChange={(e) => { const f = e.target.files?.[0]; if (f) handleIdFile(f); }}
             />
             <button
               type="button"
-              onClick={() => { setIsScanningId(true); document.getElementById('wassaa-id-file')?.click(); }}
-              disabled={isScanningId}
+              onClick={() => document.getElementById('wassaa-id-file')?.click()}
               className="w-full min-h-[52px] py-3.5 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] text-white text-sm font-semibold flex items-center justify-center gap-2 shadow-sm transition-colors active:scale-[0.985]"
             >
-              {isScanningId ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Opening camera…</span>
-                </>
-              ) : (
-                <>
-                  <Upload className="w-4 h-4" />
-                  <span>{hasId ? 'Replace ID photo' : 'Capture / upload ID photo'}</span>
-                </>
-              )}
+              <ImageIcon className="w-4 h-4" />
+              <span>{hasId ? 'Choose another photo' : 'Upload from gallery'}</span>
             </button>
           </div>
         </div>
       )}
 
-      {/* Modal: live selfie */}
+      {/* Modal: strict camera selfie */}
       {activeModal === 'selfie' && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white rounded-t-3xl sm:rounded-2xl p-6 sm:p-8 border border-[#E8E4DC] shadow-[0_8px_32px_-4px_rgba(0,0,0,0.12)] w-full max-w-md text-center max-h-[92dvh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#E8E4DC]">
               <h3 className="font-['Cormorant_Garamond',serif] text-2xl font-semibold text-[#1A1816]">
-                Live Selfie
+                Live selfie
               </h3>
               <button
                 type="button"
@@ -291,53 +312,35 @@ export const IdentityCapturePanel: React.FC<IdentityCapturePanelProps> = ({ onSu
               </button>
             </div>
 
-            <div className="relative w-32 h-32 mx-auto rounded-full overflow-hidden border-2 border-[#B85A3C] mb-4 bg-[#F7F5F0]">
-              {selfieDataUrl ? (
-                <img
-                  src={selfieDataUrl}
-                  alt="Your selfie"
-                  className="w-full h-full object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              ) : (
-                <Camera className="absolute inset-0 m-auto w-10 h-10 text-[#9C958D]" />
+            <div className="relative w-64 max-w-full aspect-[3/4] mx-auto rounded-2xl overflow-hidden border-2 border-[#B85A3C] mb-4 bg-[#F7F5F0]">
+              <video
+                ref={videoRef}
+                playsInline
+                muted
+                className="absolute inset-0 h-full w-full object-cover"
+                style={{ transform: 'scaleX(-1)' }}
+              />
+              {cameraBusy && (
+                <div className="absolute inset-0 flex items-center justify-center bg-[#F7F5F0]">
+                  <RefreshCw className="w-6 h-6 animate-spin text-[#B85A3C]" />
+                </div>
               )}
-              {isCapturingSelfie && (
-                <div className="absolute inset-0 bg-[#B85A3C]/20 animate-pulse" />
+              {cameraError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#F7F5F0] px-6">
+                  <Camera className="w-8 h-8 text-[#9C958D]" />
+                  <p className="text-xs text-[#6B665F] leading-relaxed">{cameraError}</p>
+                </div>
               )}
             </div>
 
-            <div className="mb-5">
-              <span className="text-sm font-semibold text-[#1A1816] block mb-1">
-                {selfieStage === 'look' && 'Look directly at the camera'}
-                {selfieStage === 'turn' && 'Turn your head slightly to the right'}
-                {selfieStage === 'smile' && 'Smile slightly to confirm liveness'}
-                {selfieStage === 'complete' && '✓ Selfie captured'}
-              </span>
-              <span className="text-xs text-[#6B665F]">
-                The reviewer compares your selfie against your ID photo.
-              </span>
-            </div>
-
-            <input
-              id="wassaa-selfie-file"
-              type="file"
-              accept="image/*"
-              capture="user"
-              className="hidden"
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleSelfieFile(f); }}
-            />
             <button
               type="button"
-              onClick={() => {
-                setIsCapturingSelfie(true);
-                setSelfieStage('look');
-                document.getElementById('wassaa-selfie-file')?.click();
-              }}
-              disabled={isCapturingSelfie}
-              className="w-full min-h-[52px] py-3.5 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] text-white text-sm font-semibold flex items-center justify-center gap-2 shadow-sm transition-colors active:scale-[0.985]"
+              onClick={() => (cameraError ? void startCamera() : snapSelfie())}
+              disabled={cameraBusy}
+              className="w-full min-h-[52px] py-3.5 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] text-white text-sm font-semibold flex items-center justify-center gap-2 shadow-sm transition-colors active:scale-[0.985] disabled:opacity-60"
             >
-              {isCapturingSelfie ? 'Capturing live selfie…' : (selfieDataUrl ? 'Retake selfie' : 'Capture selfie')}
+              <Camera className="w-4 h-4" />
+              {cameraError ? 'Retry camera' : 'Take a selfie'}
             </button>
           </div>
         </div>

@@ -18,7 +18,10 @@ export type UniformedService =
   | 'FRSC'
   | 'Immigration'
   | 'Customs'
-  | 'None';
+  | 'None'
+  // The deck now spans armed forces, police and paramilitary agencies
+  // worldwide, so the type stays open while keeping editor hints above.
+  | (string & Record<never, never>);
 
 export type VisibilitySetting = 'public' | 'matches' | 'private';
 
@@ -87,6 +90,8 @@ export interface UserProfile {
   dutyStation?: string;
   city: string;
   state: string;
+  /** ISO-2 country code (KB §18E); defaults to NG for legacy profiles. */
+  countryCode?: string;
   neighborhood?: string;
   hometown?: string;
   distanceKm?: number;
@@ -110,6 +115,12 @@ export interface UserProfile {
   skill?: string;
   /** Signed-in member only: credit balance and any account sanction. */
   credits?: number;
+  /** Signed-in member only: is a credit pack purchasable in their country? */
+  creditRegionSupported?: boolean;
+  /** Signed-in member only: verified member in an unsellable region messages free. */
+  freeChat?: boolean;
+  /** Signed-in member only: credits granted per day (5 while unverified abroad). */
+  dailyCreditAllowance?: number;
   accountStatus?: 'active' | 'restricted' | 'banned';
   restrictionReason?: string;
   verification: VerificationData;

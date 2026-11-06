@@ -16,8 +16,10 @@ import {
   MatchPreferences,
   LifestyleHabits,
   ValuesAndFamily,
+  CreditPack,
 } from '../../types';
 import { WassaaApi } from '../../services/api';
+import { COUNTRY_OPTIONS, findCountry, servicesFor } from '../../data/countries';
 import { preparePhoto } from '../../services/media';
 import { track } from '../../services/analytics';
 import { ORG_ROLES, skillsForCategory } from '../../constants/career';
@@ -26,17 +28,13 @@ import { IdentityCapturePanel } from '../common/IdentityCapturePanel';
 interface RealDatingOnboardingFlowProps {
   initialUser?: UserProfile;
   onComplete: (profile: UserProfile) => void;
+  /** Credit packs from entitlements — powers the optional top-up pitch step. */
+  packs?: CreditPack[];
+  /** Starts secure checkout (same flow as the credit store). */
+  onBuyPack?: (packId: string) => void;
 }
 
 // â”€â”€â”€ Data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-const NIGERIAN_STATES = [
-  'Lagos', 'Abuja (FCT)', 'Rivers (Port Harcourt)', 'Oyo (Ibadan)',
-  'Enugu', 'Kano', 'Delta (Asaba/Warri)', 'Kaduna', 'Ogun (Abeokuta)',
-  'Edo (Benin City)', 'Anambra (Awka/Onitsha)', 'Akwa Ibom (Uyo)',
-  'Cross River (Calabar)', 'Plateau (Jos)', 'Ondo', 'Imo (Owerri)',
-  'Kwara (Ilorin)', 'Osun', 'Abia', 'Other State',
-];
 
 const DATING_GOALS: { value: UserProfile['datingGoal']; label: string; desc: string }[] = [
   { value: 'marriage', label: 'Marriage', desc: 'Looking for a life partner' },
@@ -55,17 +53,6 @@ const PROFESSION_CATEGORIES: { value: ProfessionCategory; label: string }[] = [
   { value: 'Business & Entrepreneurship', label: 'Business & Entrepreneurship' },
   { value: 'Law & Government', label: 'Law & Government' },
   { value: 'Others', label: 'Other' },
-];
-
-const UNIFORMED_SERVICES: { value: UniformedService; label: string }[] = [
-  { value: 'Nigerian Army', label: 'Nigerian Army' },
-  { value: 'Nigerian Navy', label: 'Nigerian Navy' },
-  { value: 'Nigerian Air Force', label: 'Nigerian Air Force' },
-  { value: 'Nigerian Police Force', label: 'Nigerian Police Force' },
-  { value: 'NSCDC', label: 'Nigeria Security and Civil Defence Corps' },
-  { value: 'FRSC', label: 'Federal Road Safety Corps' },
-  { value: 'Immigration', label: 'Nigeria Immigration Service' },
-  { value: 'Customs', label: 'Nigeria Customs Service' },
 ];
 
 const DATING_PROMPTS = [
@@ -98,17 +85,19 @@ const FAITH_OPTIONS = [
 
 // â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-const STEP_COUNT = 11;
+const STEP_COUNT = 12;
 // Analytics labels only — no member data. Keeps the onboarding funnel readable.
 const STEP_NAMES = [
   'intent', 'basics', 'photos', 'profession', 'location',
-  'about', 'lifestyle', 'values', 'interests', 'preferences', 'verification',
+  'about', 'lifestyle', 'values', 'interests', 'preferences', 'credits', 'verification',
 ] as const;
 const resumeStep = (user?: UserProfile): number => {
   if (!user?.datingGoal) return 1;
   if (!user.name || user.name === 'New member' || !user.birthDate || !user.gender) return 2;
   if (user.photos.length < 2) return 3;
-  if (!user.professionCategory || !user.professionTitle) return 4;
+  // Uniformed members pick a branch and cadre instead of a job title — ranks
+  // are deliberately never collected (KB: "WASSAA never shows rank").
+  if (!user.professionCategory || (!isUniformedCategory(user.professionCategory) && !user.professionTitle)) return 4;
   if (!user.city || !user.state) return 5;
   if ((user.bio || '').trim().length < 10) return 6;
   if (user.interests.length < 3) return 9;
@@ -124,6 +113,8 @@ const isUniformedCategory = (cat: ProfessionCategory) =>
 export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> = ({
   initialUser,
   onComplete,
+  packs = [],
+  onBuyPack,
 }) => {
   const [step, setStep] = useState(() => resumeStep(initialUser));
 
@@ -148,7 +139,9 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
   const [skill, setSkill] = useState(initialUser?.skill || '');
   const [companyOrOrg, setCompanyOrOrg] = useState(initialUser?.companyOrOrg || '');
 
-  // Step 5 â€” Location
+  // Step 5 — Location
+  const [countryCode, setCountryCode] = useState(initialUser?.countryCode || 'NG');
+  const [customCountryCode, setCustomCountryCode] = useState('');
   const [state, setState] = useState(initialUser?.state || '');
   const [city, setCity] = useState(initialUser?.city || '');
   const [locationCoordinates, setLocationCoordinates] = useState<UserProfile['locationCoordinates']>();
@@ -202,13 +195,13 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
       ({ coords }) => {
         setLocationCoordinates({ latitude: coords.latitude, longitude: coords.longitude });
         setDistanceEnabled(true);
-        setLocationMessage('Location saved for distance matching. Your exact coordinates are private.');
+        setLocationMessage('Location saved.');
         setLocationBusy(false);
       },
       (error) => {
         setLocationMessage(error.code === error.PERMISSION_DENIED
-          ? 'Location permission was declined. City and state matching will still work.'
-          : 'Could not get your location. Check device location settings and try again.');
+          ? 'Location permission was declined — city and state still work.'
+          : 'Could not get your location. Try again in device settings.');
         setLocationBusy(false);
       },
       { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 }
@@ -222,14 +215,15 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
       case 1: return !!datingGoal;
       case 2: return firstName.trim().length >= 2 && !!birthDate && !!gender;
       case 3: return photos.length >= 2;
-      case 4: return !!professionCategory && professionTitle.trim().length >= 2;
-      case 5: return !!state && city.trim().length >= 2;
+      case 4: return !!professionCategory && (isUniformedCategory(professionCategory as ProfessionCategory) || professionTitle.trim().length >= 2);
+      case 5: return !!state && city.trim().length >= 2 && /^[A-Z]{2}$/.test((countryCode || customCountryCode).toUpperCase());
       case 6: return bio.trim().length >= 10;
       case 7: return true; // lifestyle is optional
       case 8: return true; // values are optional
       case 9: return interests.length >= 3;
       case 10: return true; // preferences have usable defaults
-      case 11: return true; // identity verification is optional
+      case 11: return true; // the top-up pitch is skippable
+      case 12: return true; // identity verification is optional
       default: return false;
     }
   };
@@ -242,7 +236,9 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
     if (step === 3) await WassaaApi.updateProfile({ photos });
     if (step === 4) await WassaaApi.updateProfile({
       professionCategory: professionCategory as ProfessionCategory,
-      professionTitle: professionTitle.trim(),
+      // No job title is collected for military, paramilitary or law-enforcement
+      // members — their branch and cadre describe the work without a rank.
+      professionTitle: isUniformedCategory(professionCategory as ProfessionCategory) ? undefined : professionTitle.trim(),
       service: (isUniformedCategory(professionCategory as ProfessionCategory) && service ? service : undefined) as UniformedService | undefined,
       orgRole: (isUniformedCategory(professionCategory as ProfessionCategory) && orgRole ? orgRole : undefined) as 'officer' | 'soldier' | undefined,
       skill: skill || undefined,
@@ -251,7 +247,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
       almaMater: almaMater.trim() || undefined,
     });
     if (step === 5) {
-      await WassaaApi.updateProfile({ city: city.trim(), state });
+      await WassaaApi.updateProfile({ city: city.trim(), state, countryCode: (countryCode || customCountryCode).toUpperCase() });
       if (locationCoordinates) await WassaaApi.updateLocation(locationCoordinates);
     }
     if (step === 6) await WassaaApi.updateProfile({ bio: bio.trim() });
@@ -408,13 +404,13 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
   // STEP 1: What are you looking for?
   if (step === 1) return (
     <>
-      {heading("What are you looking for?", "This helps us find the right people for you.")}
+      {heading("What are you looking for?")}
       <div className="space-y-3">
         {DATING_GOALS.map(({ value, label, desc }) => (
           <button
             key={value}
             onClick={() => setDatingGoal(value)}
-            className={`w-full text-left p-4 rounded-2xl border transition-all ${
+            className={`relative w-full text-left p-4 rounded-2xl border transition-all ${
               datingGoal === value
                 ? 'border-[#B85A3C] bg-[#F5EAE5]'
                 : 'border-[#E8E4DC] bg-white hover:border-[#B85A3C]/30'
@@ -496,7 +492,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
   // STEP 3: Photos
   if (step === 3) return (
     <>
-      {heading("Add your photos", "Upload at least 2 photos. People with 4+ photos get 3x more matches.")}
+      {heading("Add your photos", "At least 2 photos.")}
       <div className="grid grid-cols-3 gap-2.5">
         {[0, 1, 2, 3, 4, 5].map((idx) => {
           const photo = photos[idx];
@@ -531,7 +527,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
         })}
       </div>
       <p className="text-xs text-[#9C958D] mt-4 text-center">
-        Tip: Use clear, recent photos of yourself. No group photos for your main picture.
+        Clear, recent photos of you.
       </p>
     </>
   );
@@ -541,6 +537,20 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
     <>
       {heading("What do you do?", "Your profession helps people find common ground.")}
       <div className="space-y-5">
+        <div>
+          <label className="block text-xs font-semibold text-[#1A1816] mb-2 uppercase tracking-wider font-['Space_Mono',monospace]">Country</label>
+          <select
+            value={countryCode}
+            onChange={(e) => {
+              const code = e.target.value;
+              setCountryCode(code);
+              if (service && !servicesFor(code, professionCategory || '').includes(service)) setService('');
+            }}
+            className="w-full px-4 py-3 bg-white border border-[#E8E4DC] rounded-xl text-sm text-[#1A1816] focus:outline-none focus:border-[#B85A3C] focus:ring-1 focus:ring-[#B85A3C]/20 transition-colors appearance-none"
+          >
+            {COUNTRY_OPTIONS.map((c) => <option key={c.code || 'other'} value={c.code}>{c.name}</option>)}
+          </select>
+        </div>
         <div>
           <label className="block text-xs font-semibold text-[#1A1816] mb-2 uppercase tracking-wider font-['Space_Mono',monospace]">Field</label>
           <div className="grid grid-cols-2 gap-2">
@@ -564,16 +574,12 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
           <div>
             <label className="block text-xs font-semibold text-[#1A1816] mb-2 uppercase tracking-wider font-['Space_Mono',monospace]">Branch</label>
             <div className="space-y-2">
-              {UNIFORMED_SERVICES.filter((s) => {
-                if (professionCategory === 'Military') return ['Nigerian Army', 'Nigerian Navy', 'Nigerian Air Force'].includes(s.value);
-                if (professionCategory === 'Police') return s.value === 'Nigerian Police Force';
-                return ['NSCDC', 'FRSC', 'Immigration', 'Customs'].includes(s.value);
-              }).map(({ value, label }) => (
+              {servicesFor(countryCode, professionCategory).map((label) => (
                 <button
-                  key={value}
-                  onClick={() => setService(value)}
+                  key={label}
+                  onClick={() => setService(label)}
                   className={`w-full text-left py-3 px-4 rounded-xl border text-sm transition-all ${
-                    service === value
+                    service === label
                       ? 'border-[#B85A3C] bg-[#F5EAE5] text-[#1A1816] font-medium'
                       : 'border-[#E8E4DC] bg-white text-[#6B665F] hover:border-[#B85A3C]/30'
                   }`}
@@ -588,9 +594,6 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
         {professionCategory && isUniformedCategory(professionCategory) && (
           <div>
             <label className="block text-xs font-semibold text-[#1A1816] uppercase tracking-wider font-['Space_Mono',monospace]">Cadre</label>
-            <p className="mb-2 mt-1 text-[0.75rem] leading-relaxed text-[#6B665F]">
-              WASSAA never shows rank — only whether you are commissioned or non-commissioned.
-            </p>
             <div className="grid grid-cols-2 gap-2">
               {ORG_ROLES.map(({ value, label, desc }) => (
                 <button
@@ -631,15 +634,17 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
           </div>
         )}
 
-        <div>
-          <label className="block text-xs font-semibold text-[#1A1816] mb-1.5 uppercase tracking-wider font-['Space_Mono',monospace]">Job title</label>
-          <input
-            value={professionTitle}
-            onChange={(e) => setProfessionTitle(e.target.value)}
-            placeholder={isUniformedCategory(professionCategory as ProfessionCategory) ? 'e.g. Lieutenant, Sergeant, Officer' : 'e.g. Software Engineer, Doctor'}
-            className="w-full px-4 py-3 bg-white border border-[#E8E4DC] rounded-xl text-sm text-[#1A1816] placeholder-[#9C958D] focus:outline-none focus:border-[#B85A3C] focus:ring-1 focus:ring-[#B85A3C]/20 transition-colors"
-          />
-        </div>
+        {professionCategory && !isUniformedCategory(professionCategory as ProfessionCategory) && (
+          <div>
+            <label className="block text-xs font-semibold text-[#1A1816] mb-1.5 uppercase tracking-wider font-['Space_Mono',monospace]">Job title</label>
+            <input
+              value={professionTitle}
+              onChange={(e) => setProfessionTitle(e.target.value)}
+              placeholder="e.g. Software Engineer, Doctor"
+              className="w-full px-4 py-3 bg-white border border-[#E8E4DC] rounded-xl text-sm text-[#1A1816] placeholder-[#9C958D] focus:outline-none focus:border-[#B85A3C] focus:ring-1 focus:ring-[#B85A3C]/20 transition-colors"
+            />
+          </div>
+        )}
 
         <div>
           <label className="block text-xs font-semibold text-[#1A1816] mb-1.5 uppercase tracking-wider font-['Space_Mono',monospace]">Organisation <span className="text-[#9C958D] normal-case">(optional)</span></label>
@@ -657,18 +662,40 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
   // STEP 5: Location
   if (step === 5) return (
     <>
-      {heading("Where are you based?", "City and state help us prioritize nearby people. Device location enables an exact distance limit.")}
+      {heading("Where are you based?")}
       <div className="space-y-5">
+        {countryCode === '' && (
+          <div>
+            <label className="block text-xs font-semibold text-[#1A1816] mb-1.5 uppercase tracking-wider font-['Space_Mono',monospace]">Country code</label>
+            <input
+              value={customCountryCode}
+              onChange={(e) => setCustomCountryCode(e.target.value.replace(/[^a-zA-Z]/g, '').slice(0, 2).toUpperCase())}
+              placeholder="e.g. SE"
+              maxLength={2}
+              className="w-full px-4 py-3 bg-white border border-[#E8E4DC] rounded-xl text-sm text-[#1A1816] placeholder-[#9C958D] focus:outline-none focus:border-[#B85A3C] focus:ring-1 focus:ring-[#B85A3C]/20 transition-colors uppercase"
+            />
+            <p className="mt-1.5 text-[0.7rem] text-[#9C958D]">Two-letter country code, e.g. SE.</p>
+          </div>
+        )}
         <div>
-          <label className="block text-xs font-semibold text-[#1A1816] mb-2 uppercase tracking-wider font-['Space_Mono',monospace]">State</label>
-          <select
-            value={state}
-            onChange={(e) => setState(e.target.value)}
-            className="w-full px-4 py-3 bg-white border border-[#E8E4DC] rounded-xl text-sm text-[#1A1816] focus:outline-none focus:border-[#B85A3C] focus:ring-1 focus:ring-[#B85A3C]/20 transition-colors appearance-none"
-          >
-            <option value="">Select your state</option>
-            {NIGERIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <label className="block text-xs font-semibold text-[#1A1816] mb-2 uppercase tracking-wider font-['Space_Mono',monospace]">State / region</label>
+          {findCountry(countryCode).regions.length ? (
+            <select
+              value={state}
+              onChange={(e) => setState(e.target.value)}
+              className="w-full px-4 py-3 bg-white border border-[#E8E4DC] rounded-xl text-sm text-[#1A1816] focus:outline-none focus:border-[#B85A3C] focus:ring-1 focus:ring-[#B85A3C]/20 transition-colors appearance-none"
+            >
+              <option value="">Select your state</option>
+              {findCountry(countryCode).regions.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          ) : (
+            <input
+              value={state}
+              onChange={(e) => setState(e.target.value)}
+              placeholder="State, province or region"
+              className="w-full px-4 py-3 bg-white border border-[#E8E4DC] rounded-xl text-sm text-[#1A1816] placeholder-[#9C958D] focus:outline-none focus:border-[#B85A3C] focus:ring-1 focus:ring-[#B85A3C]/20 transition-colors"
+            />
+          )}
         </div>
 
         <div>
@@ -676,15 +703,15 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
           <input
             value={city}
             onChange={(e) => setCity(e.target.value)}
-            placeholder="e.g. Lekki, Wuse II, GRA"
+            placeholder={countryCode === 'NG' ? 'e.g. Lekki, Wuse II, GRA' : 'e.g. Brooklyn, Shoreditch, Mitte'}
             className="w-full px-4 py-3 bg-white border border-[#E8E4DC] rounded-xl text-sm text-[#1A1816] placeholder-[#9C958D] focus:outline-none focus:border-[#B85A3C] focus:ring-1 focus:ring-[#B85A3C]/20 transition-colors"
           />
         </div>
         <div className="rounded-xl border border-[#E8E4DC] bg-white p-4">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-sm font-semibold text-[#1A1816]">Precise location for nearby matches</p>
-              <p className="mt-1 text-xs leading-relaxed text-[#6B665F]">Optional. Wassaa uses your device location to calculate distance; your exact coordinates are never shown on your profile.</p>
+              <p className="text-sm font-semibold text-[#1A1816]">Precise location</p>
+              <p className="mt-1 text-xs leading-relaxed text-[#6B665F]">Optional. Your exact coordinates are never shown on your profile.</p>
             </div>
             <MapPin className="h-5 w-5 shrink-0 text-[#B85A3C]" />
           </div>
@@ -701,7 +728,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
   // STEP 6: Bio
   if (step === 6) return (
     <>
-      {heading("Write your bio", "A few lines about yourself. Be honest â€” it works better.")}
+      {heading("Write your bio", "A few lines about you.")}
       <div className="space-y-5">
         <div>
           <textarea
@@ -740,7 +767,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
   // STEP 7: Lifestyle
   if (step === 7) return (
     <>
-      {heading("Your lifestyle", "Optional â€” but these small details often matter.")}
+      {heading("Your lifestyle", "Optional.")}
       <div className="space-y-6">
         {/* Exercise */}
         <div>
@@ -796,7 +823,7 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
   // STEP 8: Values & faith
   if (step === 8) return (
     <>
-      {heading("Values & family", "Optional â€” dealbreakers are best shared early.")}
+      {heading("Values & family", "Optional.")}
       <div className="space-y-6">
         <div>
           <label className="block text-xs font-semibold text-[#1A1816] mb-2 uppercase tracking-wider font-['Space_Mono',monospace]">Faith</label>
@@ -1014,12 +1041,59 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
     </>
   );
 
-  // STEP 11: Identity verification (optional)
-  if (step === 11) return (
+  // STEP 11: Optional credit top-up pitch
+  if (step === 11) {
+    const available = packs.filter((p) => p.priceNgn > 0);
+    return (
+      <>
+        {heading("Stand out from day one", "You start with 25 free credits. A one-time top-up keeps every conversation going, and credits never expire.")}
+        {onBuyPack && available.length > 0 ? (
+          <div className="space-y-3">
+            {available.map((pack) => (
+              <article key={pack.id} className={`w-full text-left p-4 rounded-2xl border transition-all bg-white relative ${
+                pack.isPopular ? 'border-[#B85A3C] shadow-[0_4px_16px_-4px_rgba(184,90,60,0.25)]' : 'border-[#E8E4DC]'
+              }`}>
+                {pack.isPopular && (
+                  <span className="absolute -top-2.5 left-4 text-[0.65rem] font-semibold tracking-wide uppercase bg-[#B85A3C] text-white px-2.5 py-0.5 rounded-full">
+                    Most popular
+                  </span>
+                )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-['Cormorant_Garamond',serif] text-xl font-semibold text-[#1A1816]">{pack.name}</p>
+                    <p className="text-xs text-[#6B665F]">{pack.credits.toLocaleString()} credits · {pack.tagline}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onBuyPack(pack.id)}
+                    disabled={initialUser?.creditRegionSupported === false}
+                    className="shrink-0 px-4 py-2.5 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] disabled:bg-[#EFEAE4] disabled:text-[#9C958D] text-white text-xs font-semibold transition-colors"
+                  >
+                    ₦{pack.priceNgn.toLocaleString()}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="p-4 rounded-2xl border border-[#E8E4DC] bg-white text-sm text-[#6B665F]">
+            Your first 25 credits are on your account already — they unlock the first several messages.
+          </div>
+        )}
+        <p className="mt-5 text-center text-xs leading-relaxed text-[#9C958D]">
+          Skippable — send your free credits first and top up anytime from the Credits tab.
+        </p>
+      </>
+    );
+  }
+
+  // STEP 12: Identity verification (optional)
+  if (step === 12) return (
     <>
-      {heading("Verify your identity", "A live selfie plus a government ID. A human reviewer compares the two, usually within 24 hours.")}
+      {heading("Verify your identity", "Add your ID and a quick live selfie.")}
       <IdentityCapturePanel
         status={verificationStatus === 'verified' ? 'verified' : verificationStatus === 'pending' ? 'pending' : 'not_started'}
+        uniformed={!!professionCategory && isUniformedCategory(professionCategory as ProfessionCategory)}
         onSubmitted={() => setVerificationStatus('pending')}
       />
       <p className="mt-4 text-center text-xs leading-relaxed text-[#9C958D]">

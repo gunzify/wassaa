@@ -6,19 +6,44 @@ import { tickMatch, tickUserThreads } from './npc.ts';
 
 type Row = Record<string, any>;
 const allowedOrigins = (Deno.env.get('APP_ORIGINS') || 'https://wassaa.app,http://localhost:5173,http://localhost:5174,http://localhost:4173').split(',').map((s) => s.trim());
-// Credit packs replace the retired tier plans (KB §18E): 1 credit = 1 NPC
-// message, real-matched chat stays free, credits never expire.
+// Credit packs replace the retired tier plans (KB §18E): text messages cost 5
+// credits (photos 10), replies are free, real-matched chat stays free, credits
+// never expire. The smallest pack starts at ₦2,000 — the low-price entry tier
+// was removed once per-message pricing matured.
 const CREDIT_PACKS = [
-  { id: 'credit_40', name: 'Quick Top-Up', tagline: 'Keep a conversation going', priceNgn: 300, credits: 40, period: 'one-time', features: ['40 credits', 'Quick top-up', 'Credits never expire'] },
-  { id: 'credit_240', name: 'Standard', tagline: 'For the curious', priceNgn: 1500, credits: 240, period: 'one-time', isPopular: true, features: ['240 credits', '₦6.25 per credit', 'Credits never expire'] },
-  { id: 'credit_600', name: 'Premium', tagline: 'Best value per credit', priceNgn: 3300, credits: 600, period: 'one-time', features: ['600 credits', '₦5.50 per credit', 'Credits never expire'] }
+  { id: 'credit_150', name: 'Starter', tagline: 'Start strong', priceNgn: 2000, credits: 150, period: 'one-time', features: ['150 credits', 'About 30 text messages', 'Credits never expire'] },
+  { id: 'credit_450', name: 'Standard', tagline: 'Most members pick this', priceNgn: 5000, credits: 450, period: 'one-time', isPopular: true, features: ['450 credits', 'About 90 text messages', 'Credits never expire'] },
+  { id: 'credit_1200', name: 'Best Value', tagline: 'Never run dry', priceNgn: 12000, credits: 1200, period: 'one-time', features: ['1,200 credits', 'About 240 text messages', 'Credits never expire'] }
 ];
 const PLANS = [
-  { id: 'free', name: 'Free', tagline: 'Meet the community', priceNgn: 0, period: 'free', features: ['Browse profiles', 'Like up to 30 profiles per day', '25 free credits on signup', 'Free chat with real matches'] },
+  { id: 'free', name: 'Free', tagline: 'Meet the community', priceNgn: 0, period: 'free', features: ['Browse profiles', '20 free swipes per day, then 1 credit per swipe', '25 free credits on signup', 'Message directly from any profile'] },
   ...CREDIT_PACKS
 ];
+// Pricing v2 (KB §18E): texts are 5 credits, photos 10, in a mutually liked
+// thread. A cold thread — you have messaged them, they have not liked you
+// back yet — doubles every outgoing message; once they like back, pricing
+// drops to normal automatically (computed on send). 20 free right-swipes a
+// day, then 1 credit per extra swipe. Super Like stays 3 credits, see-who-
+// liked-you stays 15.
+const PRICING = {
+  text: 5,
+  photo: 10,
+  coldMultiplier: 2,
+  freeDailySwipes: 20,
+  paidSwipe: 1,
+  superLike: 3,
+  revealLikes: 15,
+  boost: 10
+} as const;
 const DEFAULT_PRIVACY = { serviceVisibility: 'matches', rankVisibility: 'private', verificationDisplay: 'badge', chatNotifications: true, twoFactorAuth: false, privateIntroductionOptIn: true };
 const MAX_JSON_BYTES = 1_500_000;
+// Paystack settles cards in these markets. Anywhere else a member cannot buy a
+// credit pack, so messaging is free once they are verified and unverified
+// members get a 5-credit daily allowance (KB §18E).
+const SUPPORTED_CREDIT_REGIONS = ['NG', 'GH', 'ZA', 'KE'];
+const creditRegionSupported = (code: string | null | undefined) => SUPPORTED_CREDIT_REGIONS.includes((code || 'NG').toUpperCase());
+const isFreeChat = (p: Row) => Boolean(p.verification_status === 'verified' && !creditRegionSupported(p.country_code));
+const dailyCreditAllowance = (p: Row) => (!creditRegionSupported(p.country_code) && p.verification_status !== 'verified' ? 5 : 1);
 
 function headers(origin: string | null): HeadersInit {
   const allowOrigin = origin && allowedOrigins.includes(origin) ? origin : 'https://wassaa.app';
@@ -112,7 +137,7 @@ function profileForViewer(p: Row, viewerId: string, mutual = false, distanceKm?:
     : (p.is_npc && p.npc?.values && typeof p.npc.values === 'object' && Object.keys(p.npc.values).length ? p.npc.values : null);
   return {
     id: p.id, name: p.name || 'New member',
-    ...(p.id === viewerId ? { email: p.email || undefined, phone: p.phone || undefined, hasPreciseLocation: p.location_lat != null && p.location_lng != null, credits: p.credits ?? 0, accountStatus: p.account_status || 'active', restrictionReason: p.restriction_reason || undefined } : {}),
+    ...(p.id === viewerId ? { email: p.email || undefined, phone: p.phone || undefined, hasPreciseLocation: p.location_lat != null && p.location_lng != null, credits: p.credits ?? 0, accountStatus: p.account_status || 'active', restrictionReason: p.restriction_reason || undefined, creditRegionSupported: creditRegionSupported(p.country_code), freeChat: isFreeChat(p), dailyCreditAllowance: dailyCreditAllowance(p) } : {}),
     phoneVerified: Boolean(p.phone),
     ...(p.id === viewerId && p.birth_date ? { birthDate: p.birth_date } : {}), age: ageOf(p.birth_date),
     gender: p.gender || undefined, pronouns: p.pronouns || undefined,
@@ -124,7 +149,7 @@ function profileForViewer(p: Row, viewerId: string, mutual = false, distanceKm?:
     // Rank is never part of the contract — cadre (org_role) replaced it, and
     // duty station follows the same visibility control as the service itself.
     dutyStation: privacy.serviceVisibility === 'private' || (privacy.serviceVisibility === 'matches' && !mutual) ? undefined : p.duty_station || undefined,
-    city: p.city || '', state: p.state || '', bio: p.bio || '', photos: p.photos || [], interests: p.interests || [],
+    city: p.city || '', state: p.state || '', countryCode: p.country_code || 'NG', bio: p.bio || '', photos: p.photos || [], interests: p.interests || [],
     ...(distanceKm != null ? { distanceKm } : {}),
     datingGoal: p.dating_goal || undefined, matchPreferences: p.match_preferences || undefined,
     ...(prompts.length ? { prompts } : {}),
@@ -164,6 +189,13 @@ function objectKey(kind: string, userId: string, contentType: string) {
   return `${prefix}/${userId}/${crypto.randomUUID()}.${ext}`;
 }
 function isStorageKey(key: unknown): key is string { return typeof key === 'string' && !!key && !/^https?:\/\//i.test(key) && !key.startsWith('data:') && !key.includes('..'); }
+/** Keys the given member owns: their profile photos, ID documents, and sent chat media. */
+function ownedMediaKeys(uid: string, keys: unknown[]): string[] {
+  return keys.filter((key): key is string =>
+    isStorageKey(key) &&
+    (key.startsWith(`photos/${uid}/`) || key.startsWith(`verification/${uid}/`) || key.startsWith(`chat/${uid}/`))
+  );
+}
 async function presignedGet(key: string) {
   const client = await s3Client(), bucket = Deno.env.get('R2_PRIVATE_BUCKET') || Deno.env.get('R2_BUCKET');
   if (!client || !bucket) return null;
@@ -213,11 +245,15 @@ async function purgeAccountMedia(db: ReturnType<typeof createClient>, p: Row): P
     db.from('verification_submissions').select('id_doc_url,selfie_url').eq('user_id', uid)
   ]);
   const matchIds = (matches || []).map((m: Row) => m.id);
-  const { data: messages } = matchIds.length ? await db.from('messages').select('media_url').in('match_id', matchIds) : { data: [] as Row[] };
-  const keys = [
+  // Only media this member sent. Chat photos live under chat/<sender-id>/, so
+  // selecting every message in the thread would delete the partner's photos.
+  const { data: messages } = matchIds.length
+    ? await db.from('messages').select('media_url').in('match_id', matchIds).eq('sender_id', uid)
+    : { data: [] as Row[] };
+  const keys = ownedMediaKeys(uid, [
     ...(messages || []).map((m: Row) => m.media_url),
     ...(submissions || []).flatMap((s: Row) => [s.id_doc_url, s.selfie_url])
-  ].filter((key: unknown): key is string => isStorageKey(key));
+  ]);
   if (!client) return ((p.photos || []).length > 0 || keys.length > 0) ? 'no_storage' : 'ok';
   try {
     if (keys.length) await deleteStorageKeys(keys);
@@ -233,17 +269,69 @@ async function purgeAccountMedia(db: ReturnType<typeof createClient>, p: Row): P
   }
 }
 
+// Constant-time string compare so a signature guess leaks no timing information.
+function signatureMatches(a: string, b: string): boolean {
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.min(a.length, b.length); i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function hmac(algorithm: 'SHA-256' | 'SHA-512', keyBytes: Uint8Array, message: string): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: algorithm }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message)));
+}
+
+const toHex = (bytes: Uint8Array) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+const toBase64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+const encoder = new TextEncoder();
+
+/**
+ * Paystack accepts two webhook signature schemes:
+ * - legacy `x-paystack-signature`: hex HMAC-SHA512 of the raw body, keyed with the
+ *   secret key (and, once a signing secret exists, with that secret).
+ * - Standard Webhooks (`webhook-id` / `webhook-timestamp` / `webhook-signature`):
+ *   base64 HMAC-SHA256 over `${id}.${timestamp}.${body}`, keyed with the base64
+ *   decoded `whsec_` signing secret. Newer dashboards activate this scheme, so
+ *   both are accepted and either must match.
+ */
+async function verifyPaystackWebhookSignature(raw: string, headers: Headers): Promise<boolean> {
+  const secretKey = Deno.env.get('PAYSTACK_SECRET_KEY') || '';
+  const signingSecret = (Deno.env.get('PAYSTACK_WEBHOOK_SECRET') || '').replace(/^whsec_/, '');
+  const legacy = headers.get('x-paystack-signature') || '';
+
+  if (legacy) {
+    for (const secret of [secretKey, signingSecret].filter(Boolean)) {
+      const expected = toHex(await hmac('SHA-512', encoder.encode(secret), raw));
+      if (signatureMatches(expected, legacy)) return true;
+    }
+  }
+
+  const standard = headers.get('webhook-signature') || '';
+  const id = headers.get('webhook-id') || '';
+  const timestamp = headers.get('webhook-timestamp') || '';
+  if (standard && id && timestamp && signingSecret) {
+    // Reject stale deliveries (replay window).
+    const skew = Math.abs(Date.now() / 1000 - Number(timestamp || '0'));
+    if (!Number.isFinite(skew) || skew > 300) return false;
+    let keyBytes: Uint8Array;
+    try { keyBytes = Uint8Array.from(atob(signingSecret), (c) => c.charCodeAt(0)); }
+    catch { keyBytes = encoder.encode(signingSecret); }
+    const expected = toBase64(await hmac('SHA-256', keyBytes, `${id}.${timestamp}.${raw}`));
+    for (const candidate of standard.split(' ')) {
+      const value = candidate.includes(',') ? candidate.slice(candidate.indexOf(',') + 1) : candidate;
+      if (signatureMatches(expected, value)) return true;
+    }
+  }
+
+  return false;
+}
+
 async function handlePaystackWebhook(req: Request): Promise<Response> {
-  const secret = Deno.env.get('PAYSTACK_SECRET_KEY'), signature = req.headers.get('x-paystack-signature');
-  if (!secret || !signature) return new Response('Invalid webhook signature', { status: 401 });
+  const secret = Deno.env.get('PAYSTACK_SECRET_KEY');
+  if (!secret) return new Response('Invalid webhook signature', { status: 401 });
   const raw = await req.text();
   if (raw.length > 1_000_000) return new Response('Payload too large', { status: 413 });
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-512' }, false, ['sign']);
-  const digest = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(raw)));
-  const expected = [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
-  let diff = expected.length ^ signature.length;
-  for (let i = 0; i < Math.min(expected.length, signature.length); i++) diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
-  if (diff !== 0) return new Response('Invalid webhook signature', { status: 401 });
+  if (!(await verifyPaystackWebhookSignature(raw, req.headers))) return new Response('Invalid webhook signature', { status: 401 });
   let event: Row; try { event = JSON.parse(raw); } catch { return new Response('Invalid JSON', { status: 400 }); }
   if (event.event === 'charge.success' && event.data?.status === 'success' && event.data?.reference) {
     const supabaseUrl = Deno.env.get('SUPABASE_URL'), service = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -265,6 +353,26 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
   const { data: admin } = await db.from('wassaa_admin_users').select('display_name').eq('user_id', user.id).maybeSingle();
   if (!admin) return err('Admin access is not enabled for this account.', 403, origin);
   if (path === '/admin/session' && req.method === 'GET') return json({ ok: true, storage: Boolean(await s3Client()) }, 200, origin);
+  // One call powers the console header: every queue that needs a human, plus
+  // persona and paid-member counts.
+  if (path === '/admin/overview' && req.method === 'GET') {
+    const countOf = async (table: string, build?: (q: any) => any) => {
+      let q = db.from(table).select('id', { count: 'exact', head: true });
+      if (build) q = build(q);
+      const { count } = await q;
+      return count ?? 0;
+    };
+    const [pendingVerifications, openReports, pendingAppeals, adminOwnedThreads, personas, activePersonas] = await Promise.all([
+      countOf('verification_submissions', (q) => q.eq('status', 'pending')),
+      countOf('reports', (q) => q.in('status', ['pending_review', 'investigating'])),
+      countOf('appeals', (q) => q.eq('status', 'pending')),
+      countOf('matches', (q) => q.eq('auto_state', 'admin_owned')),
+      countOf('profiles', (q) => q.eq('is_npc', true)),
+      countOf('profiles', (q) => q.eq('is_npc', true).eq('npc_active', true)),
+    ]);
+    const { data: paidRows } = await db.rpc('wassaa_admin_paid_members');
+    return json({ pendingVerifications, openReports, pendingAppeals, adminOwnedThreads, personas, activePersonas, paidMembers: (paidRows || []).length }, 200, origin);
+  }
   const idMatch = path.match(/^\/admin\/verifications\/([0-9a-f-]+)\/review$/i);
   const reportMatch = path.match(/^\/admin\/reports\/([0-9a-f-]+)\/status$/i);
   const reportContextMatch = path.match(/^\/admin\/reports\/([0-9a-f-]+)\/context$/i);
@@ -281,7 +389,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const { data: queue, error } = await db.from('verification_submissions').select('*').eq('status', 'pending').order('submitted_at', { ascending: true }).limit(200);
     if (error) return err('Could not load verification queue.', 500, origin);
     const userIds = [...new Set((queue || []).map((s: Row) => s.user_id))];
-    const { data: profiles } = userIds.length ? await db.from('profiles').select('id,name,birth_date,gender,phone,city,state,profession_title,profession_category,verification_status,photos').in('id', userIds) : { data: [] as Row[] };
+    const { data: profiles } = userIds.length ? await db.from('profiles').select('id,name,birth_date,gender,phone,city,state,profession_title,profession_category,verification_status,photos,country_code,region_attested_code').in('id', userIds) : { data: [] as Row[] };
     const byId = new Map<string, Row>((profiles || []).map((p: Row): [string, Row] => [p.id, p]));
     return json({ queue: await Promise.all((queue || []).map(async (s: Row) => {
       const getMedia = async (key: string | null) => {
@@ -292,11 +400,15 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       const p = byId.get(s.user_id);
       return { id: s.id, submittedAt: s.submitted_at, documentType: s.document_type, documentNumberMasked: s.document_number_masked,
         idDocUrl: await getMedia(s.id_doc_url), selfieUrl: await getMedia(s.selfie_url),
-        profile: p ? { id: p.id, name: p.name, birthDate: p.birth_date, age: ageOf(p.birth_date), gender: p.gender, phone: p.phone, city: p.city, state: p.state, professionTitle: p.profession_title, professionCategory: p.profession_category, verificationStatus: p.verification_status, photos: p.photos } : null };
+        profile: p ? { id: p.id, name: p.name, birthDate: p.birth_date, age: ageOf(p.birth_date), gender: p.gender, phone: p.phone, city: p.city, state: p.state, professionTitle: p.profession_title, professionCategory: p.profession_category, verificationStatus: p.verification_status, photos: p.photos, countryCode: p.country_code, regionAttestedCode: p.region_attested_code } : null };
     })), storage: Boolean(await s3Client()) }, 200, origin);
   }
   if (idMatch && req.method === 'POST') {
-    const b = await bodyJson(req), approve = Boolean(b.approve), note = cleanString(b.note, 500) || null;
+    const b = await bodyJson(req);
+    // Privileged decisions are parsed strictly: Boolean("false") is true, so a
+    // stringified rejection used to approve the submission instead.
+    if (typeof b.approve !== 'boolean') return err('approve must be true or false.', 400, origin);
+    const approve = b.approve, note = cleanString(b.note, 500) || null;
     const { data: sub } = await db.from('verification_submissions').select('*').eq('id', idMatch[1]).maybeSingle();
     if (!sub) return err('Submission not found.', 404, origin);
     if (sub.status !== 'pending') return err('This submission has already been reviewed.', 409, origin);
@@ -309,8 +421,18 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const { data: resolved, error } = await db.from('verification_submissions').update({ status: approve ? 'verified' : 'rejected', reviewed_at: now, reviewed_by: actor, review_note: note }).eq('id', idMatch[1]).eq('status', 'pending').select('*').maybeSingle();
     if (error) return err('Could not resolve verification.', 500, origin);
     if (!resolved) return err('This submission has already been reviewed.', 409, origin);
-    await db.from('profiles').update({ verification_status: approve ? 'verified' : 'rejected', verified_at: approve ? now.slice(0, 10) : null, updated_at: now }).eq('id', sub.user_id);
-    await db.from('admin_audit').insert({ admin_id: actor, action: approve ? 'verification.approved' : 'verification.rejected', target_id: resolved.id, detail: { userId: sub.user_id, note } });
+    // Approving also attests the country the reviewer saw. Free chat requires
+    // region_attested_code = country_code, so a later self-service country edit
+    // invalidates the grant until the member is reviewed again.
+    const { data: reviewedProfile } = await db.from('profiles').select('country_code').eq('id', sub.user_id).maybeSingle();
+    await db.from('profiles').update({
+      verification_status: approve ? 'verified' : 'rejected',
+      verified_at: approve ? now.slice(0, 10) : null,
+      region_attested_at: approve ? now : null,
+      region_attested_code: approve ? (reviewedProfile?.country_code || null) : null,
+      updated_at: now
+    }).eq('id', sub.user_id);
+    await db.from('admin_audit').insert({ admin_id: actor, action: approve ? 'verification.approved' : 'verification.rejected', target_id: resolved.id, detail: { userId: sub.user_id, note, regionAttested: approve ? reviewedProfile?.country_code || null : null } });
     const { data: p } = await db.from('profiles').select('id,name,verification_status').eq('id', sub.user_id).maybeSingle();
     return json({ success: true, submission: { id: resolved.id, status: resolved.status, reviewedAt: resolved.reviewed_at }, user: p }, 200, origin);
   }
@@ -337,7 +459,9 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     return json({ success: true, report: reportRow(report) }, 200, origin);
   }
   if (blockMatch && req.method === 'POST') {
-    const b = await bodyJson(req), blocked = b.blocked !== false;
+    const b = await bodyJson(req);
+    if (typeof b.blocked !== 'boolean') return err('blocked must be true or false.', 400, origin);
+    const blocked = b.blocked;
     const { data: target } = await db.from('profiles').select('id,name').eq('id', blockMatch[1]).maybeSingle();
     if (!target) return err('Profile not found.', 404, origin);
     await db.from('profiles').update({ blocked_us: blocked, updated_at: new Date().toISOString() }).eq('id', target.id);
@@ -472,7 +596,9 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     }) }, 200, origin);
   }
   if (appealDecisionMatch && req.method === 'POST') {
-    const b = await bodyJson(req), grant = b.grant !== false, note = cleanString(b.note, 500) || null;
+    const b = await bodyJson(req);
+    if (typeof b.grant !== 'boolean') return err('grant must be true or false.', 400, origin);
+    const grant = b.grant, note = cleanString(b.note, 500) || null;
     const { data: appeal } = await db.from('appeals').select('*').eq('id', Number(appealDecisionMatch[1])).maybeSingle();
     if (!appeal) return err('Appeal not found.', 404, origin);
     if (appeal.status !== 'pending') return err('This appeal has already been decided.', 409, origin);
@@ -485,27 +611,38 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
   }
   // ---- NPC threads: monitor + send as the NPC (staff-operated conversations) ----
   if (path === '/admin/threads' && req.method === 'GET') {
-    const state = reqUrl(req).searchParams.get('state') || '';
-    let q = db.from('matches').select('*').order('created_at', { ascending: false }).limit(100);
+    const params = reqUrl(req).searchParams;
+    const state = params.get('state') || '';
+    const onlyPaid = params.get('paid') === '1';
+    let q = db.from('matches').select('*').order('created_at', { ascending: false }).limit(200);
     if (['none','active','quiet','admin_owned'].includes(state)) q = q.eq('auto_state', state);
     const { data: matches, error } = await q;
     if (error) return err('Could not load threads.', 500, origin);
     const sideIds = [...new Set((matches || []).flatMap((m: Row) => [m.user_a, m.user_b]))];
     const profiles = new Map<string, Row>();
     for (let i = 0; i < sideIds.length; i += 100) {
-      const { data } = await db.from('profiles').select('id,name,is_npc,npc_active,deleted_at').in('id', sideIds.slice(i, i + 100));
+      const { data } = await db.from('profiles').select('id,name,is_npc,npc_active,deleted_at,country_code,verification_status').in('id', sideIds.slice(i, i + 100));
       for (const p of data || []) profiles.set(p.id, p);
     }
-    const threads = (matches || []).flatMap((m: Row) => {
+    // Paying members are the owner's priority: their persona threads sort first.
+    const { data: paidRows } = await db.rpc('wassaa_admin_paid_members');
+    const paid = new Map<string, Row>((paidRows || []).map((r: Row) => [String(r.profile_id), r]));
+    let threads = (matches || []).flatMap((m: Row) => {
       const a = profiles.get(m.user_a), b = profiles.get(m.user_b);
       const npc = a?.is_npc ? a : b?.is_npc ? b : null;
       if (!npc) return [];
       const member = npc.id === m.user_a ? b : a;
       if (!member) return [];
+      const pay = paid.get(member.id);
       return [{ id: m.id, autoState: m.auto_state, takenOverBy: m.taken_over_by || undefined, createdAt: m.created_at,
-        autoSpent: m.auto_spent || 0, member: { id: member.id, name: member.name }, npc: { id: npc.id, name: npc.name } }];
+        autoSpent: m.auto_spent || 0, lastMessageAt: m.last_message_at || m.created_at,
+        paid: Boolean(pay), purchasedAt: pay?.purchased_at || undefined, creditsBought: Number(pay?.credits_bought || 0),
+        member: { id: member.id, name: member.name, countryCode: member.country_code || 'NG', verified: member.verification_status === 'verified' },
+        npc: { id: npc.id, name: npc.name } }];
     });
-    return json({ threads }, 200, origin);
+    if (onlyPaid) threads = threads.filter((t) => t.paid);
+    threads.sort((x, y) => (Number(y.paid) - Number(x.paid)) || (Date.parse(y.lastMessageAt) - Date.parse(x.lastMessageAt)));
+    return json({ threads, paidCount: threads.filter((t) => t.paid).length }, 200, origin);
   }
   if (threadMessagesMatch && (req.method === 'GET' || req.method === 'POST')) {
     const matchId = threadMessagesMatch[1];
@@ -537,21 +674,54 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
   }
   // ---- NPC manager: list, edit persona, replace photos ----
   if (path === '/admin/npcs' && req.method === 'GET') {
-    const search = (reqUrl(req).searchParams.get('search') || '').trim();
-    let q = db.from('profiles').select('id,name,birth_date,gender,pronouns,company_or_org,duty_station,education_level,alma_mater,city,state,profession_category,profession_title,service,org_role,skill,class_of_service,bio,photos,interests,dating_goal,prompts,lifestyle,values_family,verification_status,npc_active,npc,created_at')
-      .eq('is_npc', true).order('created_at', { ascending: false }).limit(300);
+    const params = reqUrl(req).searchParams;
+    const search = (params.get('search') || '').trim();
+    const country = (params.get('country') || '').trim().toUpperCase();
+    const cls = (params.get('class') || '').trim();
+    const service = (params.get('service') || '').trim();
+    const gender = (params.get('gender') || '').trim();
+    const active = (params.get('active') || '').trim();
+    const limit = Math.min(200, Math.max(20, Number(params.get('limit')) || 60));
+    const offset = Math.max(0, Number(params.get('offset')) || 0);
+    let q = db.from('profiles').select('id,name,birth_date,gender,pronouns,company_or_org,duty_station,education_level,alma_mater,city,state,country_code,profession_category,profession_title,service,org_role,skill,class_of_service,bio,photos,interests,dating_goal,prompts,lifestyle,values_family,verification_status,npc_active,npc,created_at', { count: 'exact' })
+      .eq('is_npc', true);
     if (search) q = q.ilike('name', `%${search.replace(/[%_]/g, '')}%`);
-    const { data: npcs, error } = await q;
+    if (/^[A-Z]{2}$/.test(country)) q = q.eq('country_code', country);
+    if (['military','police','paramilitary','civilian'].includes(cls)) q = q.eq('class_of_service', cls);
+    if (gender === 'female' || gender === 'male') q = q.eq('gender', gender);
+    if (active === '1') q = q.eq('npc_active', true);
+    if (active === '0') q = q.eq('npc_active', false);
+    if (service) q = q.ilike('service', `%${service.replace(/[%_]/g, '')}%`);
+    const { data: npcs, error, count } = await q.order('created_at', { ascending: false }).range(offset, offset + limit - 1);
     if (error) return err('Could not load NPCs.', 500, origin);
     return json({ npcs: (npcs || []).map((p: Row) => ({
       id: p.id, name: p.name, age: ageOf(p.birth_date), birthDate: p.birth_date, gender: p.gender, pronouns: p.pronouns,
-      city: p.city, state: p.state, companyOrOrg: p.company_or_org, dutyStation: p.duty_station,
+      city: p.city, state: p.state, countryCode: p.country_code || 'NG', companyOrOrg: p.company_or_org, dutyStation: p.duty_station,
       educationLevel: p.education_level, almaMater: p.alma_mater,
       professionCategory: p.profession_category, professionTitle: p.profession_title, classOfService: p.class_of_service,
       orgRole: p.org_role, skill: p.skill, service: p.service, bio: p.bio, photos: p.photos, interests: p.interests,
       datingGoal: p.dating_goal, prompts: p.prompts || [], lifestyle: p.lifestyle || null, values: p.values_family || null,
       verificationStatus: p.verification_status, active: p.npc_active, persona: p.npc || {}, createdAt: p.created_at
-    })) }, 200, origin);
+    })), total: count ?? 0, limit, offset }, 200, origin);
+  }
+  // Facets for the persona filters: every country, class, service and gender in
+  // the deck with a count, so the console never hardcodes a list.
+  if (path === '/admin/npc-facets' && req.method === 'GET') {
+    const { data, error } = await db.from('profiles').select('country_code,class_of_service,service,gender,npc_active').eq('is_npc', true).limit(3000);
+    if (error) return err('Could not load persona facets.', 500, origin);
+    const tally = (values: (string | null)[]) => {
+      const map = new Map<string, number>();
+      for (const value of values) if (value) map.set(value, (map.get(value) || 0) + 1);
+      return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
+    };
+    return json({
+      countries: tally((data || []).map((r: Row) => r.country_code || 'NG')),
+      classes: tally((data || []).map((r: Row) => r.class_of_service)),
+      services: tally((data || []).map((r: Row) => r.service)),
+      genders: tally((data || []).map((r: Row) => r.gender)),
+      active: (data || []).filter((r: Row) => r.npc_active).length,
+      total: (data || []).length,
+    }, 200, origin);
   }
   if (npcOneMatch && req.method === 'PATCH') {
     const b = await bodyJson(req);
@@ -577,6 +747,11 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     setText('educationLevel', 'education_level', 80); setText('almaMater', 'alma_mater', 120);
     setText('professionTitle', 'profession_title', 80); setText('service', 'service', 80);
     setText('skill', 'skill', 60); setText('dutyStation', 'duty_station', 120);
+    if (typeof b.countryCode === 'string') {
+      const code = b.countryCode.trim().toUpperCase();
+      if (!/^[A-Z]{2}$/.test(code)) return err('Country must be a two-letter ISO code.', 400, origin);
+      update.country_code = code;
+    }
     if (b.gender !== undefined) {
       const gender = enumValue(b.gender, ['female', 'male']);
       if (!gender) return err('Choose a valid gender.', 400, origin);
@@ -657,11 +832,18 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const b = await bodyJson(req);
     if (!Array.isArray(b.photos)) return err('photos must be an array of URLs.', 400, origin);
     const photos = b.photos.map((v: unknown) => cleanString(v, 600)).filter((v: string) => /^https:\/\//i.test(v)).slice(0, 8);
-    const { data: npc } = await db.from('profiles').select('id,is_npc').eq('id', npcPhotosMatch[1]).maybeSingle();
+    const { data: npc } = await db.from('profiles').select('id,is_npc,npc').eq('id', npcPhotosMatch[1]).maybeSingle();
     if (!npc?.is_npc) return err('NPC not found.', 404, origin);
-    const { error } = await db.from('profiles').update({ photos, updated_at: new Date().toISOString() }).eq('id', npc.id);
+    // A photo uploaded by a human is the final word: mark the persona `manual`
+    // so the automatic pool dealer never re-deals over it, and put it live now.
+    const persona = { ...(npc.npc || {}) };
+    const hasPhotos = photos.length > 0;
+    persona.photoState = hasPhotos ? 'manual' : 'awaiting_upload';
+    const update: Row = { photos, npc: persona, updated_at: new Date().toISOString() };
+    update.npc_active = hasPhotos;
+    const { error } = await db.from('profiles').update(update).eq('id', npc.id);
     if (error) return err('Could not update NPC photos.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.photos', target_id: npc.id, detail: { count: photos.length } });
+    await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.photos', target_id: npc.id, detail: { count: photos.length, active: hasPhotos } });
     return json({ success: true, photos }, 200, origin);
   }
   return err('Not found.', 404, origin);
@@ -740,11 +922,16 @@ Deno.serve(async (req) => {
     }
     if (path === '/me/profile' && req.method === 'GET') return json({ user: profilePayload(profile) }, 200, origin);
     if (path === '/me/profile' && req.method === 'PATCH') {
-      const b = await getBody(); const fields: Record<string, string> = { name: 'name', birthDate: 'birth_date', gender: 'gender', pronouns: 'pronouns', professionCategory: 'profession_category', professionTitle: 'profession_title', companyOrOrg: 'company_or_org', service: 'service', dutyStation: 'duty_station', educationLevel: 'education_level', almaMater: 'alma_mater', city: 'city', state: 'state', bio: 'bio', datingGoal: 'dating_goal', orgRole: 'org_role', skill: 'skill' };
+      const b = await getBody(); const fields: Record<string, string> = { name: 'name', birthDate: 'birth_date', gender: 'gender', pronouns: 'pronouns', professionCategory: 'profession_category', professionTitle: 'profession_title', companyOrOrg: 'company_or_org', service: 'service', dutyStation: 'duty_station', educationLevel: 'education_level', almaMater: 'alma_mater', city: 'city', state: 'state', countryCode: 'country_code', bio: 'bio', datingGoal: 'dating_goal', orgRole: 'org_role', skill: 'skill' };
       const update: Row = {};
       for (const [key, column] of Object.entries(fields)) if (b[key] !== undefined && typeof b[key] === 'string') update[column] = cleanString(b[key], ({ name: 60, bio: 1000, service: 80, profession_title: 80, city: 100, state: 100, duty_station: 120, education_level: 80, alma_mater: 120, org_role: 20, skill: 60 } as Record<string, number>)[column] || 150);
       // Role/skill taxonomy (KB §18A): empty strings clear back to null.
       for (const col of ['org_role', 'skill']) if (update[col] === '') update[col] = null;
+      if (update.country_code !== undefined) {
+        const code = String(update.country_code).toUpperCase();
+        if (!/^[A-Z]{2}$/.test(code)) return err('Choose a valid country.', 400, origin);
+        update.country_code = code;
+      }
       if (update.org_role != null && !['officer', 'soldier'].includes(update.org_role)) return err('Choose either Officer or Soldier.', 400, origin);
       if (update.skill != null && !/^[A-Za-z0-9 &/+-]{1,60}$/.test(update.skill)) return err('Choose a skill from the list.', 400, origin);
       // The class of service is derived server-side from the profession category
@@ -838,11 +1025,13 @@ Deno.serve(async (req) => {
             db.from('verification_submissions').select('id_doc_url,selfie_url').eq('user_id', uid)
           ]);
           const matchIds = (matches || []).map((m: Row) => m.id);
-          const { data: messages } = matchIds.length ? await db.from('messages').select('media_url').in('match_id', matchIds) : { data: [] as Row[] };
-          const keys = [
+          const { data: messages } = matchIds.length
+            ? await db.from('messages').select('media_url').in('match_id', matchIds).eq('sender_id', uid)
+            : { data: [] as Row[] };
+          const keys = ownedMediaKeys(uid, [
             ...(messages || []).map((m: Row) => m.media_url),
             ...(submissions || []).flatMap((s: Row) => [s.id_doc_url, s.selfie_url])
-          ].filter((key: unknown): key is string => isStorageKey(key));
+          ]);
           await deleteStorageKeys(keys);
           const privateBucket = Deno.env.get('R2_PRIVATE_BUCKET') || Deno.env.get('R2_BUCKET');
           const publicBucket = Deno.env.get('R2_PUBLIC_BUCKET');
@@ -924,16 +1113,36 @@ Deno.serve(async (req) => {
       if (!targetId || targetId === uid) return err('You cannot like your own profile.', 400, origin);
       const { data: target } = await db.from('profiles').select('*').eq('id', targetId).is('deleted_at', null).maybeSingle();
       if (!target || target.blocked_us) return err('Profile not found.', 404, origin);
-      // Super Likes cost 3 credits (KB §18E); plain likes stay free under the
-      // daily anti-spam cap. Pre-charge, then refund if the swipe does not land.
-      let charged = false;
+      // Super Likes cost 3 credits; plain likes stay free under the daily
+      // cap. 20 free right-swipes a day for every tier, then 1 credit per
+      // extra swipe — exhausted swipers can pay their way past the cap.
+      // Pre-charge, then refund if the swipe does not land.
+      let chargedSuper = false;
       if (kind === 'super') {
-        const { data: balance } = await db.rpc('wassaa_spend_credit', { p_profile: uid, p_delta: 3, p_reason: 'super_like', p_reference: targetId });
-        if (typeof balance !== 'number' || balance < 0) return err('You need 3 credits for a Super Like.', 402, origin, 'CREDITS_NEEDED');
-        charged = true;
+        const { data: balance } = await db.rpc('wassaa_spend_credit', { p_profile: uid, p_delta: PRICING.superLike, p_reason: 'super_like', p_reference: targetId });
+        if (typeof balance !== 'number' || balance < 0) return err(`You need ${PRICING.superLike} credits for a Super Like.`, 402, origin, 'CREDITS_NEEDED');
+        chargedSuper = true;
       }
-      const refund = async () => { if (charged) await db.rpc('wassaa_grant_credit', { p_profile: uid, p_delta: 3, p_reason: 'refund', p_reference: targetId }); };
-      const { data: outcome, error } = await db.rpc('wassaa_record_like', { p_from: uid, p_to: targetId, p_kind: kind, p_daily_limit: profile.tier === 'free' ? 30 : -1, p_weekly_super_limit: -1 });
+      let paidSwipe = false; // 1-credit charge for a swipe past the daily cap
+      // Anything that means the swipe did not land returns the member's
+      // credits — Super Like and over-cap swipe alike.
+      const refund = async () => {
+        if (chargedSuper) await db.rpc('wassaa_grant_credit', { p_profile: uid, p_delta: PRICING.superLike, p_reason: 'refund', p_reference: targetId });
+        if (paidSwipe) await db.rpc('wassaa_grant_credit', { p_profile: uid, p_delta: PRICING.paidSwipe, p_reason: 'refund', p_reference: targetId });
+      };
+      let outcome: Row | string | null = null;
+      let error = null as unknown;
+      ({ data: outcome, error } = await db.rpc('wassaa_record_like', { p_from: uid, p_to: targetId, p_kind: kind, p_daily_limit: PRICING.freeDailySwipes, p_weekly_super_limit: -1 }));
+      if (outcome === 'daily_limit') {
+        // Cap reached: 1 credit buys this swipe past the limit.
+        const { data: swipeBalance } = await db.rpc('wassaa_spend_credit', { p_profile: uid, p_delta: PRICING.paidSwipe, p_reason: 'extra_swipe', p_reference: targetId });
+        if (typeof swipeBalance !== 'number' || swipeBalance < 0) {
+          await refund();
+          return err(`Daily swipe limit reached — ${PRICING.paidSwipe} credit per extra swipe. Top up to keep swiping.`, 402, origin, 'CREDITS_NEEDED');
+        }
+        paidSwipe = true;
+        ({ data: outcome, error } = await db.rpc('wassaa_record_like', { p_from: uid, p_to: targetId, p_kind: kind, p_daily_limit: -1, p_weekly_super_limit: -1 }));
+      }
       if (error) { await refund(); return err('Could not save this like.', 500, origin); }
       if (outcome === 'blocked') { await refund(); return err('Unable to interact with this profile.', 403, origin); }
       if (outcome === 'daily_limit') { await refund(); return err('Daily like limit reached. Try again tomorrow.', 402, origin, 'LIKE_LIMIT'); }
@@ -958,8 +1167,37 @@ Deno.serve(async (req) => {
       }
       const { data: matchId } = await db.rpc('wassaa_find_or_create_match', { p_a: uid, p_b: targetId });
       let balance: number | undefined;
-      if (kind === 'super') { const { data: fresh } = await db.from('profiles').select('credits').eq('id', uid).maybeSingle(); balance = fresh?.credits; }
+      if (paidSwipe || kind === 'super') { const { data: fresh } = await db.from('profiles').select('credits').eq('id', uid).maybeSingle(); balance = fresh?.credits; }
       return json({ success: true, isMatch: Boolean(matchId), ...(balance != null ? { balance } : {}), ...(matchId ? { match: { id: matchId, partner: profileForViewer(target, uid, true) } } : {}), ...(outcome === 'already' ? { already: true } : {}) }, 200, origin);
+    }
+    // Cold opens: a member may message someone they have not matched with.
+    // The thread lives in `matches` like any other thread but carries no
+    // "You matched" system line — that belongs to genuine mutual swipes —
+    // and every outgoing message costs 2x until the partner likes back
+    // (computed at send time by wassaa_send_message, so pricing drops to
+    // normal the moment they do). Blocks, deleted and self targets are kept
+    // out; 15 opened threads per hour keeps mass-cold-messaging down.
+    if (path === '/direct-threads' && req.method === 'POST') {
+      const limited = await allowAction('dm_open', 15, 3600); if (limited) return limited;
+      const b = await getBody(), targetId = cleanString(b.profileId || b.targetUserId, 64);
+      if (!targetId || targetId === uid) return err('Invalid message target.', 400, origin);
+      const { data: target } = await db.from('profiles').select('*').eq('id', targetId).is('deleted_at', null).maybeSingle();
+      if (!target || target.blocked_us) return err('Profile not found.', 404, origin);
+      const { data: block } = await db.from('blocks').select('id').or(`and(blocker_id.eq.${uid},blocked_id.eq.${targetId}),and(blocker_id.eq.${targetId},blocked_id.eq.${uid})`).limit(1);
+      if (block?.length) return err('Unable to message this member.', 403, origin);
+      const a = uid < targetId ? uid : targetId, c = uid < targetId ? targetId : uid;
+      const { data: existingThread } = await db.from('matches').select('id').eq('user_a', a).eq('user_b', c).maybeSingle();
+      let matchId: string | undefined = existingThread?.id;
+      if (!matchId) {
+        const { data: created, error: createError } = await db.from('matches').insert({ user_a: a, user_b: c }).select('id').single();
+        if (createError) {
+          // unique(user_a,user_b) race — a concurrent like or open won it
+          const { data: again } = await db.from('matches').select('id').eq('user_a', a).eq('user_b', c).maybeSingle();
+          matchId = again?.id;
+          if (!matchId) return err('Could not open the chat.', 500, origin);
+        } else matchId = created.id;
+      }
+      return json({ success: true, matchId, partner: profileForViewer(target, uid, true) }, 200, origin);
     }
     if (path === '/passes' && req.method === 'POST') {
       const limited = await allowAction('pass', 300, 600); if (limited) return limited;
@@ -1059,7 +1297,7 @@ Deno.serve(async (req) => {
       await db.from('match_reads').upsert({ user_id: uid, match_id: matchId, last_read_at: new Date().toISOString() }, { onConflict: 'user_id,match_id' });
       const mapped = sent ? messageRow(sent) : null;
       if (mapped && kind === 'photo' && media) mapped.mediaUrl = await presignedGet(media) || undefined;
-      return json({ success: true, message: mapped, balance: typeof outcome.balance === 'number' ? outcome.balance : undefined }, 200, origin);
+      return json({ success: true, message: mapped, balance: typeof outcome.balance === 'number' ? outcome.balance : undefined, free: Boolean(outcome.free) }, 200, origin);
     }
     if (readMatch && req.method === 'POST') {
       const matchId = readMatch[1], { data: match } = await db.from('matches').select('id').eq('id', matchId).or(`user_a.eq.${uid},user_b.eq.${uid}`).maybeSingle();
@@ -1144,20 +1382,21 @@ Deno.serve(async (req) => {
     }
     if (path === '/verification/submit' && req.method === 'POST') {
       const limited = await allowAction('verification', 5, 86400); if (limited) return err('Verification submission limit reached. Contact support if your documents keep being rejected.', 429, origin);
-      const b = await getBody(), types = ['NIN','Passport','DriversLicense','ServiceID'], docNo = cleanString(b.documentNumber, 100).replace(/[^A-Za-z0-9]/g, '');
+      const b = await getBody(), types = ['NIN','Passport','DriversLicense','ServiceID'];
       if (!types.includes(String(b.documentType))) return err('documentType must be NIN, Passport, DriversLicense or ServiceID.', 400, origin);
-      if (docNo.length < 4 || docNo.length > 32) return err('Enter a valid document number.', 400, origin);
       const idDoc = b.idDocKey || b.idDocDataUrl, selfie = b.selfieKey || b.selfieDataUrl;
       if (!isStorageKey(idDoc) || !String(idDoc).startsWith(`verification/${uid}/`) || !isStorageKey(selfie) || !String(selfie).startsWith(`verification/${uid}/`)) return err('Upload the ID and selfie through secure storage first.', 400, origin);
-      const masked = docNo.replace(/.(?=.{3})/g, '*');
-      const { data: submission, error } = await db.rpc('wassaa_submit_verification', { p_user: uid, p_document_type: b.documentType, p_document_number_masked: masked, p_id_doc_url: idDoc, p_selfie_url: selfie });
+      // Deliberate privacy decision (KB 2026-11-05): the product captures no
+      // document number at all, so the stored mask stays empty. Keep the RPC
+      // argument explicit rather than accepting a client-supplied mask.
+      const { data: submission, error } = await db.rpc('wassaa_submit_verification', { p_user: uid, p_document_type: b.documentType, p_document_number_masked: '', p_id_doc_url: idDoc, p_selfie_url: selfie });
       if (error) return err('Could not submit verification.', 500, origin);
       const outcome = Array.isArray(submission) ? submission[0] : submission;
       if (outcome?.result === 'verified') return err('This account is already verified.', 409, origin);
       if (outcome?.result === 'pending') return err('You already have a verification under review.', 409, origin);
       if (outcome?.result !== 'created') return err('Account not found.', 404, origin);
       const { data: updated } = await db.from('profiles').select('*').eq('id', uid).single();
-      return json({ success: true, status: 'pending', submissionId: outcome.submission_id, message: 'Submitted for review. Your documents are stored securely and only shown to reviewers.', user: updated ? profilePayload(updated) : null }, 200, origin);
+      return json({ success: true, status: 'pending', submissionId: outcome.submission_id, message: 'Verification submitted.', user: updated ? profilePayload(updated) : null }, 200, origin);
     }
     if (path === '/uploads/presign' && req.method === 'POST') {
       const limited = await allowAction('upload', 40, 3600); if (limited) return limited;
@@ -1177,12 +1416,12 @@ Deno.serve(async (req) => {
     // Billing, with provider-verified fulfillment only.
     if (path === '/billing/entitlements' && req.method === 'GET') {
       const tier = profile.tier || 'free';
-      const base = tier === 'hyper_premium' ? { tier, dailyLikes: -1, superLikesPerWeek: 15, canSeeLikes: true, canRewind: true, incognito: true, privateIntroduction: true, boostsPerMonth: 3, readReceipts: true } : tier === 'premium' ? { tier, dailyLikes: -1, superLikesPerWeek: 5, canSeeLikes: true, canRewind: true, incognito: false, privateIntroduction: false, boostsPerMonth: 1, readReceipts: false } : { tier: 'free', dailyLikes: 30, superLikesPerWeek: 1, canSeeLikes: false, canRewind: false, incognito: false, privateIntroduction: false, boostsPerMonth: 0, readReceipts: false };
+      const base = tier === 'hyper_premium' ? { tier, dailyLikes: -1, superLikesPerWeek: 15, canSeeLikes: true, canRewind: true, incognito: true, privateIntroduction: true, boostsPerMonth: 3, readReceipts: true } : tier === 'premium' ? { tier, dailyLikes: -1, superLikesPerWeek: 5, canSeeLikes: true, canRewind: true, incognito: false, privateIntroduction: false, boostsPerMonth: 1, readReceipts: false } : { tier: 'free', dailyLikes: PRICING.freeDailySwipes, superLikesPerWeek: 1, canSeeLikes: false, canRewind: false, incognito: false, privateIntroduction: false, boostsPerMonth: 0, readReceipts: false };
       const { data: fresh } = await db.from('profiles').select('credits,revealed_likes_at').eq('id', uid).maybeSingle();
       const credits = fresh?.credits ?? profile.credits ?? 0;
       // "See who liked you" is a credit feature now: unlocked for 24h per reveal.
       const revealed = Boolean(fresh?.revealed_likes_at) && Date.now() - Date.parse(fresh.revealed_likes_at) < 24 * 3600 * 1000;
-      return json({ ...base, canSeeLikes: revealed, credits, revealLikesCost: 15, packs: CREDIT_PACKS.map((p) => ({ id: p.id, name: p.name, tagline: p.tagline, priceNgn: p.priceNgn, credits: p.credits, features: p.features, isPopular: Boolean((p as Row).isPopular) })) }, 200, origin);
+      return json({ ...base, canSeeLikes: revealed, credits, revealLikesCost: 15, pricing: { text: PRICING.text, photo: PRICING.photo, coldMultiplier: PRICING.coldMultiplier, freeDailySwipes: PRICING.freeDailySwipes, paidSwipe: PRICING.paidSwipe, superLike: PRICING.superLike, revealLikes: PRICING.revealLikes }, freeChat: isFreeChat(profile), creditRegionSupported: creditRegionSupported(profile.country_code), dailyCreditAllowance: dailyCreditAllowance(profile), countryCode: profile.country_code || 'NG', packs: CREDIT_PACKS.map((p) => ({ id: p.id, name: p.name, tagline: p.tagline, priceNgn: p.priceNgn, credits: p.credits, features: p.features, isPopular: Boolean((p as Row).isPopular) })) }, 200, origin);
     }
     if (path === '/billing/checkout' && req.method === 'POST') {
       const limited = await allowAction('checkout', 5, 600); if (limited) return limited;

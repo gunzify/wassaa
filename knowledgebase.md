@@ -591,7 +591,7 @@ Decisions (profit + retention, one currency, no tier/credit mix):
 
 **Deviations from the design above** (SQL is authoritative):
 
-- Every **sent** message costs 1 credit; the "free real chat" line is retired and the store copy now says so. Replies never charge.
+- Every **sent** message costs credits at the live price table (`PRICING` in `supabase/functions/api/index.ts`): **text 5, photo 10**, and a cold open (no mutual like yet) costs **2×**. This supersedes the original 1-credit line; the migration `20261102000000_message_pricing.sql` and the store copy both say 5/10. Replies never charge. `e2e-smoke` and `npc-smoke` read the price from `/billing/entitlements` so a change is caught instead of breaking the suite.
 - The persona reply budget is **15 lifetime replies per thread** (not 12/day). `quiet` stops auto-replies; member messages still cost a credit.
 - Greeting delay is 60–180 s, deterministic per persona (not 5–60 min); replies queue 20–90 s after a member message.
 - There is no greeting cron — the engine ticks lazily when the member loads matches or a thread, so replies appear on the client's existing polling cadence.
@@ -720,3 +720,147 @@ Final live audit over all 300 personas: **mixed 0, retired 0, unclassified-given
 - Admin check with a temporary `wassaa_admin_users` grant: `GET /admin/npcs` returns `prompts`, `lifestyle`, `values`, `birthDate`, `educationLevel`, `almaMater`, `pronouns`, `companyOrOrg`, `dutyStation` — grant and user removed.
 
 **Note for future agents:** the `supabase` CLI on this machine is authenticated as an account that does *not* belong to `avlbsficfejvwokxkgyl` (it 403s on `functions` and does not list the project). `db push` works only because `backend/.env` holds the Postgres password; function deploys must be run by the owner.
+
+## 24. Startup cache and global-readiness assessment (2026-10-30)
+
+**The problem.** Launch blocked on `/auth/session` before anything rendered, then on entitlements, blocks, matches and discovery. On mobile data that is two sequential round-trips before the first face and four before the app felt populated.
+
+**The cache** — `frontend/src/services/cache.ts`, wired in `App.tsx`:
+
+- One snapshot per account in `localStorage`, under `wassaa.cache.v1.account.<uuid>` plus a `last-account` pointer. The `v1` prefix means a future shape change invalidates old entries instead of mis-rendering them.
+- Slice expiries: `user` 30 days, `entitlements` / `blocked` / `matches` 7 days, `deck` / `explore` 24 hours; the whole snapshot dies at 7 days. A stale deck is dropped while the rest of the snapshot survives.
+- **Conversation bodies are never stored.** Matches are written with `messages: []`; chat always loads from the API.
+- Boot paints from the snapshot *before* the first `fetch`, then revalidates and overwrites. A cached view is only restored when a Supabase session exists and its user id matches the snapshot (an id-less magic-link session falls back to `last-account`).
+- A `401` clears the snapshot and signs out; being offline keeps the cached view and says so. Sign-out and account deletion call `clearStartupSnapshots()`.
+- Writes happen only where data actually arrives from the server (boot session/entitlements/blocked/matches, deck load, explore load, matches refresh, profile save). Untouched slices keep their original timestamp, so writing matches today cannot make a two-day-old deck look fresh.
+- Every storage failure — private browsing, quota, corrupt JSON, older schema — degrades to "no cache"; `readStartupSnapshot` never throws.
+- `preloadImages()` in `services/media.ts` warms the first photo of the next two cards after each swipe.
+- `pruneStartupSnapshots()` runs after boot and removes expired entries plus a dangling `last-account`.
+
+**Measured** on a realistic 107 KB payload (1 profile, 30 matches, 15 deck, 36 explore): read **0.37 ms**, write **0.65 ms** (Node 24, 200 reads). The win is that first paint no longer waits on `/auth/session` + `/discovery`; it is not a claim about total load time.
+
+**Verified:** `node --test src/services/cache.test.ts` — 9/9 (round-trip, per-slice expiry, whole-snapshot expiry, account isolation, stripping message bodies, partial writes not refreshing other slices, corrupt JSON, disabled/full storage, prune). `npm run typecheck` and `npm run build` pass. No browser pass: the flows need a signed-in session, so the boot path was reviewed rather than clicked through.
+
+**Global readiness:** `docs/GLOBAL-READINESS.md`. Short version: the architecture travels; the blockers are (1) checkout — Paystack can take international cards once enabled, with USD settlement via a domiciliary account, but issuer declines remain and Paddle/Lemon Squeezy prohibit dating, so Apple/Google billing and eventually a US entity + Stripe are the real path; (2) the product is Nigeria-shaped (8 service branches, 20 states, `+234`, NIN/passport document types, NGN-only prices, binary gender); (3) verification and moderation operations; (4) GDPR/UK GDPR, UK Online Safety Act, EU DSA, tax; (5) app-store distribution. OPSEC: default service visibility to private for uniformed members and add an OPSEC report category.
+
+## 25. Global expansion: worldwide personas, region-aware free chat, console upgrades (2026-11-01)
+
+**Goal.** WASSAA was Nigeria-shaped: 8 Nigerian service branches, 20 Nigerian states, `+234`, and 300 personas all in Nigerian cities with `randomuser.me` faces. This pass makes the deck and the member experience global — 500 new uniformed personas across the US, UK, Canada, Australia, Europe, Brazil, Southern and East Africa; photos that match each persona's gender and race; free chat for verified members in countries where Paystack cannot sell credits; and a console that can actually manage the deck.
+
+### A. Country on every profile
+
+- `profiles.country_code text not null default 'NG'` with `profiles_country_code_shape` (`^[A-Z]{2}$`) and `idx_profiles_country_code`. Personas and members share the column.
+- Member PATCH `/me/profile` accepts `countryCode` (uppercased, validated). `profileForViewer` returns `countryCode` on every profile.
+- Onboarding step 4 now opens with a **country picker** (`frontend/src/data/countries.ts`, 18 countries + "Other"), and the service list is built from that country's real agencies — e.g. US Army/Navy/Air Force/Marine Corps/Coast Guard, NYPD…; British Army/Royal Navy/RAF/Royal Marines, Metropolitan Police…; Polícia Militar for Brazil. Step 5 shows that country's states/provinces; "Other" asks for a two-letter ISO code and free-text region.
+- `UniformedService` is now an open string union with the Nigerian values kept as editor hints, so a US or German agency is a valid value everywhere the type is used.
+
+### B. Region-aware credits and free chat
+
+Paystack settles in `NG, GH, ZA, KE` (`wassaa_credit_region_supported(text)`). Outside those markets a member can never buy a pack, so the product must not gate conversation on payment:
+
+- `wassaa_is_free_chat(profile)` = verified **and** a reviewer-attested region (`region_attested_code = country_code`) that Paystack cannot settle → `wassaa_send_message` spends 0 credits and returns `free: true`. Every message from a member still costs the price table everywhere else; replies never cost the member. The attestation is written only by the admin verification review, so a member editing `countryCode` invalidates the grant instead of claiming it (audit fix, 2026-11-06).
+- Daily drip: unsupported region **and** unverified → **5 credits/day** (verification is the gate, not payment); everyone else 1/day. This keeps an unverified member abroad able to chat until review completes.
+- `/me/profile` and `/billing/entitlements` expose `freeChat`, `creditRegionSupported`, `dailyCreditAllowance` (self only). Chat composer shows "Free chat — verified members in your region message without credits"; the credit store replaces packs with an explanation instead of a dead buy button. Admins see a member's country and a **paid member** badge in the thread list.
+
+### C. The global persona corpus (`scripts/npc-global.mjs`)
+
+- **36 cultures** with race-tagged naming pools (first/last names, nicknames, pronunciation-safe spellings), so a persona's name matches the face pool it draws from.
+- **17 countries**, weighted: US .31, GB .16, CA .08, AU .07, DE .06, FR .05, BR .05, ZA .04, IT .035, ES .03, NL/IE/NZ/PL .02, PT .015, KE/GH .01 (sums to 1.000). Each carries the branches it actually fields (Air Force/Navy/Army/Marines/Coast Guard where they exist), the real police services (NYPD, Met Police, RCMP, Polícia Civil…) and paramilitary agencies (Border Force, Guardia Civil, Gendarmerie, GSU…), plus cities with coordinates, local flavour, academies and skills.
+- **Deck mix:** military 55% / police 25% / paramilitary 20%; 32% officers; race mix white ~55%, black ~20%, hispanic ~8%, south Asian ~5%, east Asian ~4%, mixed ~6%, MENA ~2%. Every persona is uniformed — no civilians in the new batch.
+- Branch is stored as `persona.branch` (Army/Navy/Air Force/Marines/Coast Guard) so a card reads "US Army · Logistics officer", never "armed forces".
+
+### D. Bios that do not repeat (`scripts/npc-bios.mjs`)
+
+Four independent pools compose a bio: 40 opening hooks, 23 service lines, 8 civilian lines, 20 personal lines, 22 intention lines, plus 30 conversation prompts. No birthplace template, no "born and raised in …", no shared sentence between personas in a batch. Prompts are drawn from the same engine so question/answer pairs stay in voice.
+
+Composition rules that keep prose grammatical for every persona shape:
+
+- `lowerTitle()` lowercases job titles mid-sentence but keeps acronyms (`Cybercrime / IT`), and `capFirst()` capitalises the first letter of each composed sentence, so a line starting with `{a} {skill}` reads "A physiotherapist …".
+- A `{a}` / `{an}` article slot is derived from the skill, and `{service_phrase}` resolves to "the US Army" for uniformed personas and "this job" for civilians — no template can emit "Saying yes to the  at 19."
+- The bio draws `interest1`/`interest2` from the curated activity pool rather than the profile's interest chips, because legacy chips like "Nollywood" or "Mosque" read badly in prose ("the nollywood trips"); the chips themselves are untouched.
+- Legacy skills that repeat the agency ("Road Safety / FRSC" for the FRSC) are de-duplicated before composing.
+
+### E. Portraits matched to gender and race (`scripts/persona-photos.mjs`)
+
+- Sources, in order of reliability (all free, no API key):
+  1. **AI Horde** (`--horde-black=N`, Realistic Vision, 640×640, 40 steps, `k_dpmpp_2m`) — slow (~1 image/minute anonymous) but respects gender, age and skin tone.
+  2. **Pollinations/Flux** (`--gen-pool=race-gender:target,…`) — the bulk filler. It allows ~1 image per 40 s anonymously, and its cache is keyed by prompt, so **every request carries a random token**; without the token the service replays one face for the whole run, which is what produced the first duplicate-heavy pool.
+  3. **this-person-does-not-exist.com** — fast, but its dataset is tiny per ethnicity (measured: Black male 2 distinct in 15 requests, South Asian 3, Hispanic 21, white ~100) and its gender/age filters leak (wrong gender and children). Used only for the white/hispanic/east-Asian/MENA pools, then hand-vetted.
+- Every download is **hashed and deduplicated**; duplicates are rejected instead of counted toward a pool target.
+- Pools are sized to the deck's race mix (white largest). `mixed` reuses the hispanic pool — the closest visual range for Brazilian pardo, Cape Coloured and Māori personas.
+- Source frames: site 1024×1024 with a watermark band → 915 px crop at (52, 60); Flux 768×768 with a bottom-right mark (measured at y≥738) → centred 700 px crop at (34, 30); Horde 640×640, no mark → full frame. Every frame is resized to 800×800 JPEG and the second profile photo is a tighter crop of the **same** face, never a different person.
+- Uploaded to the **public** R2 bucket under `personas/<pool>-<gender>-NN[-alt].jpg`; the manifest `scripts/persona-photo-pools.json` records every URL. `--verify` HEAD-checks all of them; `--dry-run` prints the plan; `--host-only` re-crops/uploads/writes the manifest without generating; `--fetch-only` generates without hosting.
+- Pool contents are reviewed by **labelled contact sheet** (24 faces per sheet, index printed on each cell) before seeding; any face that is a child, the wrong gender, a two-person crop or a heavy watermark is deleted and regenerated.
+
+### F. Seeder modes (`scripts/seed-npcs.mjs`)
+
+`--global --count=500` builds uniformed personas from the corpus with country, branch, agency, city/coordinates, skill, age and composed bio; `--fix-photos` reassigns photos to every existing persona from the pool matching its gender and race (legacy Nigerian personas are treated as black); `--rewrite-bios` replaces generic biographies in place; `--dry-run` prints without writing. Portraits are dealt without replacement inside a run, so two personas never share a face until a pool is exhausted; the fallback remains `randomuser.me` if the manifest is missing.
+
+### G. Admin console
+
+- **Overview strip** (`GET /admin/overview`): pending verifications, open reports, pending appeals, team-owned threads, paid members, personas, active personas — each card jumps to its tab.
+- **Persona manager**: filters for country, class, service, gender and active state, populated from `GET /admin/npc-facets` (live counts from the deck), name search, 60-row offset pagination with **Load more**, and a running "N of M personas" count.
+- **Threads**: paid-member badge, country, verification and credits-bought chips, sorted so paying members come first; `?paid=1` filter plus a paid count. Sorting uses `matches.last_message_at`, kept current by a trigger on `messages`.
+- **Persona editor** gained country code, branch and photo pool, so a wrong face or country can be corrected without a migration.
+
+### H. Migration `20261101000000_global_personas.sql` (applied 2026-11-01)
+
+Country column + shape constraint + index; `wassaa_credit_region_supported` / `wassaa_is_free_chat` / `wassaa_daily_credit_allowance`; drip rewrite; `wassaa_send_message` returning `free`; `wassaa_seed_npc` accepting `countryCode`; `wassaa_admin_paid_members()`; and `matches.last_message_at` with a `wassaa_touch_match()` trigger on `messages` plus a backfill. Applied with `supabase db push --db-url` (never printed).
+
+### I. Status and limits
+
+- Edge API (`supabase/functions/api/index.ts`) carries all of the above and passes `node scripts/check-edge.mjs`; **it is not deployed** — the CLI has no credential for this project (403 on deploy, `login --no-browser` needs a TTY). Live API therefore still runs the previous code until `npx supabase functions deploy api --project-ref avlbsficfejvwokxkgyl` runs from an authenticated shell.
+- The country catalogue covers the deck's 17 countries plus NG/GH/KE/ZA and an "Other" ISO path; it is not every country on earth. Race and branch live inside the `npc` jsonb (admin-only), not as public columns.
+- **Portrait supply is the real constraint, not the code.** Without a paid image API the only sources are AI Horde (~1 image/min), Pollinations/Flux (~1 per 40 s) and this-person-does-not-exist.com (tiny per-ethnicity dataset that leaks children and wrong genders). The pool is therefore smaller than the deck: every persona still gets a photo that matches its gender and race, but a face repeats once a pool is exhausted, and the Black-male / South-Asian pools are the thinnest. `--fix-photos` re-deals every portrait from the current pool, so as the generator adds faces the deck spreads automatically. The clean fix is a paid generator key (Generated Photos, Replicate SDXL or OpenAI images) — the same script can host those bytes with no other changes.
+- Raw and cropped portraits live in `.persona-photos/` and are **gitignored**; only the manifest (`scripts/persona-photo-pools.json`, ~1 KB per portrait) is committed.
+
+## 26. Bio grammar pass and full deck audit (2026-11-02)
+
+**Bio engine fixes (`scripts/npc-bios.mjs`).** Live spot-checks found three glue bugs in the §25D engine: (1) food templates combined "the best / every / good" with flavour values that already carry articles ("the best a good burger"); (2) six service lines used the card-style `{service} · {skill}` label inside prose; (3) one prompt said "I hate {food}" with an article-ful value. All were reworded to be correct for every flavour value, `node --check` passes, and `node scripts/seed-npcs.mjs --rewrite-bios` regenerated **800/800** bios on the hosted deck (the engine has evolved past the §25 rewrite, so every row recomputes; admin-edited bios would also be rewritten — edit after this pass, not before, or the next full rewrite will revert them).
+
+**Verified live after the rewrite:** 800/800 unique bios, 0 birthplace-template matches, 0 occurrences of any known glue pattern, sample bios read naturally in US/GB/BR/NG/DE.
+
+**Deck state audit (ordered, deduplicated REST walk — earlier divergent counts came from unordered pagination and a filename pattern that misses `south_asian-…`):** 800 personas = 300 NG legacy + 500 global; **260 active (`photoState='ready'`, every one a pool portrait matched to gender and race, 0 mismatches), 540 paused (`photoState='awaiting_upload'`)** — exactly the owner rule that only fully set-up personas serve discovery. 23 personas (South-Asian / East-Asian pool overflow; those pools hold 0 male / 1 female and ~24 female entries) still carry `randomuser.me` fallback photos, and all 23 are paused awaiting a manual upload. Branch spread over the uniformed deck: army 163, air 93, navy 78, marines 16, coast 8 (plus real police / paramilitary agencies). No data changes were needed in this pass beyond the bios; `--fix-photos` dry-run already reports all 800 correctly set up.
+
+**Still the top deployment risk:** the §25 Edge API and frontend changes remain **undeployed** (owner CLI session needed) — `wassaa.vercel.app` and the hosted `api` function still serve the pre-global code. The §26 bio/data changes are live because they write the database directly.
+
+## 2026-11-05 — Deletion cascade, verification rebuild, uniformed onboarding, ₦2k credit packs
+
+- **Auth** (from this turn's earlier work): phone auth is out of the signup path; new accounts register with email + password + confirm password, then a Supabase verification link (`Confirm email` must be enabled with Brevo SMTP — host smtp-relay.brevo.com, port **587** not 570, user c14672001@smtp-brevo.com). `EmailVerificationScreen` now switches on `mode: 'signup' | 'signin'` (`emailAuthMode` state in App). Old OTP helpers (`requestEmailCode`/`verifyEmailCode`) remain unused.
+- **Account deletion** (`20261103000000_account_deletion_cascade.sql`): a BEFORE-DELETE trigger on `auth.users` maps the auth id to the profile (id, auth_user_id, or linked phone/email), redacts reports + admin-audit, queues every known R2 media key into `wassaa_media_purge_queue`, then deletes the profile — all relational rows (swipes, matches, messages, blocks, verification_submissions, payments, appeals, rate limits) cascade. R2 objects are purged by `node scripts/account-deletion.mjs --purge-queue` (reads backend/.env R2 creds). Self-service DELETE /me/account and admin-panel deletions already purge R2 first, so the queue only drains dashboard-driven deletes.
+- **QA/test accounts**: `node scripts/account-deletion.mjs --qa` deletes every profile named "QA Design" plus every `qa-design-*` auth user (order: R2 media → report redaction → profile cascade → auth user delete). Run against production on 2026-11-05: 9 accounts deleted, 0 remaining.
+- **Credit packs (server `CREDIT_PACKS` + client `FALLBACK_PACKS`)** rebalanced so the cheapest pack is ₦2,000: Starter ₦2,000/150cr, Standard ₦5,000/450cr (popular), Best Value ₦12,000/1,200cr. Store copy now says texts 5 credits, photos 10.
+- **Verification capture** (`IdentityCapturePanel`): no document number anywhere (Edge accepts empty `documentNumber` now); uniformed members (Military/Police/Paramilitary) upload their Military/Force ID, civilians pick National ID/Passport/Driver's licence; the ID is chosen from the gallery, the **selfie is camera-only** (getUserMedia + canvas snap, no upload path). All reviewer/methodology copy removed — the UI just asks for the ID and a live selfie. Both the onboarding step 12 and Settings `IdentityVerificationScreen` take the `uniformed` flag from the member's profession category.
+- **Onboarding**: the old **job-title field stays hidden for uniformed categories** (client + `isOnboardingComplete` in domain.ts — category alone satisfies the profession requirement; covered by tests). The stuck check mark on the dating-intent step was an absolutely-positioned <Check> inside a button that wasn't `relative`. Over-explaining copy (photo stats, cadre policy paragraph, location methodology, "be honest" lines) trimmed. New **step 11 is a skippable credit top-up pitch** reusing the same checkout flow via App's `handleSelectPack` (`packs` + `onBuyPack` props); verification moved to step 12.
+- **Discover card**: gradient lightened and the info block (name 2.35rem→1.8rem, bio clamp 2, 3 chip max) now sits in the lower third so the face shows.
+- **Profile detail**: photo hero has a gallery button opening a fullscreen lightbox (counter, dots, Esc/scroll navigation) showing every uploaded photo.
+- **Deploy state**: frontend deployed + aliased (bundle after RealDatingOnboardingFlow/verification rebuilds); Edge `functions deploy api` **still blocked by 403** — CLI login is not the project owner — so new packs/verification server changes await `npx supabase login` in backend/ then redeploy; DB trigger and QA deletions are already live.
+
+## 2026-11-06 — Full security audit, three fixes shipped, deploy unblocked
+
+Ran the Cloudflare `security-audit` skill over the whole repo (scope: `frontend/src`, `frontend/public/admin`, `supabase/functions`, `supabase/migrations`, `backend/src`, `scripts`). Source-only, read-only: no target code executed, no endpoint probed. Artifacts live outside the repo at `C:\Users\HP\security-audit-skill\wassaa\run-1` (`REPORT.md`, `FINDINGS-DETAIL.md`, `NEEDS-VALIDATION.md`, `findings.json`, `coverage-ledger.json`). Both official validators pass (6 findings, 16 coverage units) under a Windows preload shim, because they require `O_NOFOLLOW|O_NONBLOCK`. The run is marked `incomplete`: subagent quota was exhausted, so the independent verifier stage never ran.
+
+**Findings fixed in this commit**
+
+1. **Free chat was self-asserted (medium, revenue bypass).** `wassaa_is_free_chat` derived the entitlement from `profiles.country_code`, which any member writes via `PATCH /me/profile`; one request to `{"countryCode":"US"}` gave unlimited 0-credit messaging. New migration `20261104000000_region_attestation.sql` adds `region_attested_at` + `region_attested_code`, requires `region_attested_code = country_code`, and only the admin verification review writes it. Existing verified members were grandfathered on their current claim; any later country edit requires a new review. `wassaa_is_free_chat` is now also `REVOKE`d from `public, anon, authenticated`.
+2. **Admin decisions inverted on stringified booleans (low).** `Boolean(b.approve)`, `b.blocked !== false`, and `b.grant !== false` meant `"false"` approved an ID and an omitted `grant` reinstated a banned account. All three now require a real boolean and return 400 otherwise. The admin console also shows the member's region on the verification card, because approving attests it.
+3. **Account deletion destroyed the partner's chat photos (low).** The purge selected every `messages.media_url` in the member's threads, so it deleted `chat/<partner-id>/…` objects the partner owned. The API now filters to keys under `photos/<uid>/`, `verification/<uid>/`, `chat/<uid>/` (`ownedMediaKeys`), and `20261104000001_purge_queue_owner_scope.sql` mirrors that in the deletion trigger (also repinned to `search_path = ''`).
+
+**Hardening shipped with the same fix**
+
+- `backend/src/config.ts`: `SESSION_JWT_SECRET` and `ADMIN_API_KEY` no longer fall back to committed strings — the server refuses to start without them (min 32/24 chars). Verified: starting from a directory with no `.env` throws.
+- `backend/src/lib/sms.ts`: the OTP is no longer returned over HTTP unless `ALLOW_DEV_OTP_ECHO=1` and the process is not production; the console log remains for local testing.
+- Verification submissions still capture **no** document number (2026-11-05 decision). The smoke assertion was corrected to check that the raw number never appears and that no mask is stored.
+
+**Verified after deploy** (project `avlbsficfejvwokxkgyl`, DB pushed, Edge `api` deployed)
+
+- `wassaa_is_free_chat`: false for a verified NG member; still false after they set `countryCode='US'`; true only once `region_attested_code` matches. 811 verified profiles attested by the backfill, 0 mismatches.
+- `node scripts/admin-smoke.mjs` → **83/83**; `node scripts/e2e-smoke.mjs` → **57/57**; `node scripts/npc-smoke.mjs` → **16/16**. `npm run typecheck` (backend + frontend) and `node scripts/check-edge.mjs` pass.
+- Both smoke suites now read the text price from `/billing/entitlements` instead of hardcoding 1 credit, so the 5-credit price table (2026-11-05) no longer breaks them.
+
+**Not fixed / open**
+
+- `e2e-smoke` and `admin-smoke` write to the live project and clean up after themselves; they are not safe to run in parallel.
+- The 5-credit daily drip for unverified unsupported-region members still keys off the self-declared country. Deliberate: it is capped at 5/day and cannot be attested before verification.
+- Legacy `backend/src` remains in the repo as a rollback path. No deployment manifest exists for it; the frontend never calls it. Its secrets are now mandatory, so a careless deploy fails closed.
+

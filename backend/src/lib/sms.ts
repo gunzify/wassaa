@@ -53,7 +53,13 @@ export async function sendOtpSms(phone: string, code: string): Promise<{ deliver
     return { delivered: false, channel: 'unavailable' };
   }
   console.log(`[sms] NO SMS PROVIDER CONFIGURED - dev OTP for ${phone}: ${code}`);
-  return { delivered: false, channel: 'dev-console', devCode: code };
+  // The console line above is enough for local testing. Returning the code over
+  // HTTP turns any reachable non-production instance into an account-takeover
+  // oracle, so it now needs an explicit opt-in and is never echoed in production.
+  if (process.env.ALLOW_DEV_OTP_ECHO === '1' && !config.isProduction) {
+    return { delivered: false, channel: 'dev-console-echo', devCode: code };
+  }
+  return { delivered: false, channel: 'dev-console' };
 }
 
 export function generateOtp(): string {

@@ -25,6 +25,8 @@ interface ChatScreenProps {
   isBlocked?: boolean;
   /** Current credit balance — drives the per-message cost hint. */
   credits?: number;
+  /** Verified member in a region where credit packs cannot be sold (KB §18E). */
+  freeChat?: boolean;
   onOpenStore?: () => void;
   onBack: () => void;
   onSendMessage: (text: string) => Promise<boolean> | boolean | void;
@@ -39,6 +41,8 @@ interface ChatScreenProps {
   }) => Promise<void> | void;
   onUnblockUser?: (partner: UserProfile) => Promise<void> | void;
   onViewProfile?: (partner: UserProfile) => void;
+  /** Live credit prices from /billing/entitlements; drives the composer hint. */
+  pricing?: { text: number; photo: number; coldMultiplier: number };
 }
 
 /**
@@ -52,6 +56,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   messages,
   isBlocked = false,
   credits,
+  freeChat = false,
   onOpenStore,
   onBack,
   onSendMessage,
@@ -59,7 +64,8 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   onBlockUser,
   onReportUser,
   onUnblockUser,
-  onViewProfile
+  onViewProfile,
+  pricing = { text: 5, photo: 10, coldMultiplier: 2 }
 }) => {
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
@@ -420,7 +426,11 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
           </div>
         ) : (
           <div className="border-t border-line bg-surface pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-            {credits === 0 ? (
+            {freeChat ? (
+              <p className="flex items-center gap-1.5 px-4 pt-2.5 text-[0.75rem] text-ink-muted">
+                <ShieldCheck className="h-3.5 w-3.5 text-brand" /> Free chat — verified members in your region message without credits
+              </p>
+            ) : credits === 0 ? (
               <button
                 type="button"
                 onClick={() => onOpenStore?.()}
@@ -430,7 +440,8 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
               </button>
             ) : (
               <p className="flex items-center gap-1.5 px-4 pt-2.5 text-[0.75rem] text-ink-muted">
-                <Coins className="h-3.5 w-3.5" /> Each message costs 1 credit
+                <Coins className="h-3.5 w-3.5" /> Text {pricing.text} · Photo {pricing.photo} credits
+                {pricing.coldMultiplier > 1 && pricing.coldMultiplier !== 1 ? ` · unmatched chats ×${pricing.coldMultiplier}` : ''}
                 {typeof credits === 'number' ? ` · ${credits} left` : ''}
               </p>
             )}

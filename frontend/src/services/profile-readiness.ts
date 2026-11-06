@@ -1,4 +1,5 @@
 import { UserProfile } from '../types';
+import { isUniformedCategory } from '../constants/career';
 
 /** The same product requirements are enforced in the client and Edge API. */
 export function getProfileCompletion(profile: Partial<UserProfile> | null | undefined): {
@@ -17,7 +18,10 @@ export function getProfileCompletion(profile: Partial<UserProfile> | null | unde
   if (!birthDate || age < 18 || age > 110) missing.push('date of birth');
   if (!profile?.gender) missing.push('gender');
   if ((profile?.photos?.length || 0) < 2) missing.push('two profile photos');
-  if (!profile?.professionCategory || !profile.professionTitle?.trim()) missing.push('profession');
+  // Military, paramilitary and law-enforcement members do not submit a job
+  // title (ranks are never collected) — their category and branch cover it.
+  if (!profile?.professionCategory ||
+      (!isUniformedCategory(profile.professionCategory) && !profile.professionTitle?.trim())) missing.push('profession');
   if (!profile?.state?.trim() || !profile.city?.trim()) missing.push('city and state');
   if ((profile?.bio?.trim().length || 0) < 10) missing.push('a short bio');
   if ((profile?.interests?.length || 0) < 3) missing.push('three interests');
