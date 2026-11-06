@@ -5,21 +5,21 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const require = createRequire(new URL('../backend/package.json', import.meta.url));
+const require = createRequire(new URL('../package.json', import.meta.url));
 const { parse } = require('dotenv');
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const projectRef = 'avlbsficfejvwokxkgyl';
 
 if (!process.argv.includes('--credentials-rotated')) {
-  throw new Error('Deployment stopped. Rotate the Termii and R2 credentials exposed in chat, update backend/.env, then rerun with --credentials-rotated.');
+  throw new Error('Deployment stopped. Rotate the Termii and R2 credentials exposed in chat, update .env, then rerun with --credentials-rotated.');
 }
 
-const envFile = join(root, 'backend', '.env');
+const envFile = join(root, '.env');
 let values;
 try {
   values = parse(readFileSync(envFile));
 } catch {
-  throw new Error('Cannot read backend/.env.');
+  throw new Error('Cannot read .env.');
 }
 
 const required = [
@@ -29,7 +29,7 @@ const required = [
   'R2_PUBLIC_BASE_URL', 'PAYSTACK_SECRET_KEY', 'PAYSTACK_CALLBACK_URL',
 ];
 const missing = required.filter((key) => !values[key]?.trim());
-if (missing.length) throw new Error(`Deployment stopped. Add these values to backend/.env: ${missing.join(', ')}`);
+if (missing.length) throw new Error(`Deployment stopped. Add these values to .env: ${missing.join(', ')}`);
 if (values.R2_BUCKET === values.R2_PUBLIC_BUCKET) throw new Error('R2_BUCKET and R2_PUBLIC_BUCKET must be different buckets.');
 if (!/^v1,whsec_.{32,}$/.test(values.SEND_SMS_HOOK_SECRET)) throw new Error('SEND_SMS_HOOK_SECRET must use Supabase format v1,whsec_<base64 secret> and match the Send SMS Auth Hook configured in the Dashboard.');
 if (!/^https:\/\//i.test(values.R2_PUBLIC_BASE_URL)) throw new Error('R2_PUBLIC_BASE_URL must be an HTTPS asset domain.');

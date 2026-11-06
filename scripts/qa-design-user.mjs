@@ -30,12 +30,12 @@ function loadEnv(file) {
 }
 
 const fe = loadEnv('frontend/.env');
-const be = loadEnv('backend/.env');
+const be = loadEnv('.env');
 const URL_BASE = fe.VITE_SUPABASE_URL || '';
 const PUBLISHABLE = fe.VITE_SUPABASE_ANON_KEY || '';
 const SERVICE = be.SUPABASE_SERVICE_ROLE_KEY || '';
 if (!URL_BASE || !PUBLISHABLE || !SERVICE) {
-  console.error('missing frontend/.env (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY) or backend/.env (SUPABASE_SERVICE_ROLE_KEY)');
+  console.error('missing frontend/.env (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY) or .env (SUPABASE_SERVICE_ROLE_KEY)');
   process.exit(1);
 }
 const AUTH = `${URL_BASE}/auth/v1`;

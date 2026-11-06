@@ -23,15 +23,15 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 
-const require = createRequire(new URL('../backend/package.json', import.meta.url));
+const require = createRequire(new URL('../package.json', import.meta.url));
 const { parse } = require('dotenv');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const values = parse(require('node:fs').readFileSync(path.join(root, 'backend', '.env'), 'utf8'));
+const values = parse(require('node:fs').readFileSync(path.join(root, '.env'), 'utf8'));
 
 const URL_BASE = (values.SUPABASE_URL || '').trim();
 const SERVICE = (values.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 if (!URL_BASE || !SERVICE) {
-  console.error('backend/.env needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
+  console.error('.env needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
   process.exit(1);
 }
 const AUTH = `${URL_BASE}/auth/v1`;

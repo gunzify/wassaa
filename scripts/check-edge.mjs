@@ -1,7 +1,7 @@
 // Syntax/grammar check for the Supabase Edge API (Deno-style TypeScript with
 // `npm:` imports and the Deno global — `tsc --noEmit` cannot check these
 // directly, so we run TypeScript's transpile pass and report its diagnostics).
-import ts from '../backend/node_modules/typescript/lib/typescript.js';
+import ts from 'typescript';
 import { readFileSync } from 'node:fs';
 
 const files = [

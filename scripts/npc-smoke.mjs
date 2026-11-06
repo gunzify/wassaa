@@ -37,12 +37,12 @@ function loadEnv(file) {
 }
 
 const frontEnv = loadEnv('frontend/.env');
-const backEnv = loadEnv('backend/.env');
+const backEnv = loadEnv('.env');
 const SUPABASE_URL = (frontEnv.VITE_SUPABASE_URL || backEnv.SUPABASE_URL || '').replace(/\/$/, '');
 const PUBLISHABLE_KEY = frontEnv.VITE_SUPABASE_ANON_KEY || backEnv.SUPABASE_PUBLISHABLE_KEY || '';
 const SERVICE_KEY = backEnv.SUPABASE_SERVICE_ROLE_KEY || '';
 if (!SUPABASE_URL || !PUBLISHABLE_KEY || !SERVICE_KEY) {
-  console.error('Missing Supabase env values (frontend/.env, backend/.env).');
+  console.error('Missing Supabase env values (frontend/.env, .env).');
   process.exit(1);
 }
 

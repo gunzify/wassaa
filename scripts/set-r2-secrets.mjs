@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Uploads ONLY the R2_* secrets from backend/.env to the hosted Supabase
+ * Uploads ONLY the R2_* secrets from .env to the hosted Supabase
  * Edge Function environment, then removes the temporary file.
  *
  * Use this after rotating R2 credentials in the Cloudflare dashboard and
- * updating backend/.env. For the full secret set (Termii/Paystack/Google/SMS
+ * updating .env. For the full secret set (Termii/Paystack/Google/SMS
  * hook), use scripts/deploy-supabase.mjs instead.
  *
  * Secret values are never printed: they only pass through a mode-0600 temp
@@ -30,7 +30,7 @@ const REQUIRED = [
   'R2_BUCKET', 'R2_PUBLIC_BUCKET', 'R2_PUBLIC_BASE_URL',
 ];
 
-const raw = readFileSync(join(root, 'backend', '.env'), 'utf8');
+const raw = readFileSync(join(root, '.env'), 'utf8');
 const values = {};
 for (const line of raw.split(/\r?\n/)) {
   const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
@@ -43,7 +43,7 @@ for (const line of raw.split(/\r?\n/)) {
 
 const missing = REQUIRED.filter((k) => !values[k]?.trim());
 if (missing.length) {
-  console.error(`Stopped. Add these to backend/.env: ${missing.join(', ')}`);
+  console.error(`Stopped. Add these to .env: ${missing.join(', ')}`);
   process.exit(1);
 }
 if (values.R2_BUCKET === values.R2_PUBLIC_BUCKET) {

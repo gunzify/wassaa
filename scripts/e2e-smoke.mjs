@@ -47,7 +47,7 @@ function loadEnv(file) {
 }
 
 const frontEnv = loadEnv('frontend/.env');
-const backEnv = loadEnv('backend/.env');
+const backEnv = loadEnv('.env');
 
 const SUPABASE_URL = (frontEnv.VITE_SUPABASE_URL || backEnv.SUPABASE_URL || '').replace(/\/$/, '');
 const PUBLISHABLE_KEY = frontEnv.VITE_SUPABASE_ANON_KEY || backEnv.SUPABASE_PUBLISHABLE_KEY || '';
@@ -55,11 +55,11 @@ const SERVICE_KEY = backEnv.SUPABASE_SERVICE_ROLE_KEY || '';
 const BACK_URL = (backEnv.SUPABASE_URL || '').replace(/\/$/, '');
 
 if (!SUPABASE_URL || !PUBLISHABLE_KEY || !SERVICE_KEY) {
-  console.error('Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (frontend/.env) or SUPABASE_SERVICE_ROLE_KEY (backend/.env).');
+  console.error('Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (frontend/.env) or SUPABASE_SERVICE_ROLE_KEY (.env).');
   process.exit(1);
 }
 if (BACK_URL && BACK_URL !== SUPABASE_URL) {
-  console.error(`Refusing to run: backend/.env targets a different Supabase project than frontend/.env (${new URL(BACK_URL).host} vs ${new URL(SUPABASE_URL).host}).`);
+  console.error(`Refusing to run: .env targets a different Supabase project than frontend/.env (${new URL(BACK_URL).host} vs ${new URL(SUPABASE_URL).host}).`);
   process.exit(1);
 }
 

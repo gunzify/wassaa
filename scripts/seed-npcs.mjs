@@ -55,11 +55,11 @@ function loadEnv(file) {
   return out;
 }
 
-const env = { ...loadEnv('frontend/.env'), ...loadEnv('backend/.env') };
+const env = { ...loadEnv('frontend/.env'), ...loadEnv('.env') };
 const URL_BASE = env.VITE_SUPABASE_URL || '';
 const SERVICE = env.SUPABASE_SERVICE_ROLE_KEY || '';
 if (!URL_BASE || !SERVICE) {
-  console.error('missing frontend/.env (VITE_SUPABASE_URL) or backend/.env (SUPABASE_SERVICE_ROLE_KEY)');
+  console.error('missing frontend/.env (VITE_SUPABASE_URL) or .env (SUPABASE_SERVICE_ROLE_KEY)');
   process.exit(1);
 }
 const REST = `${URL_BASE}/rest/v1`;

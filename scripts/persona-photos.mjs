@@ -25,12 +25,12 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
-const require = createRequire(new URL('../backend/package.json', import.meta.url));
+const require = createRequire(new URL('../package.json', import.meta.url));
 const { parse } = require('dotenv');
 const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const env = parse(fs.readFileSync(path.join(root, 'backend', '.env')));
+const env = parse(fs.readFileSync(path.join(root, '.env')));
 
 const BUCKET = (env.R2_PUBLIC_BUCKET || '').trim();
 const PUBLIC_BASE = (env.R2_PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
@@ -361,7 +361,7 @@ function cropAll(match = '') {
 }
 
 async function uploadAll(match = '') {
-  if (!BUCKET || !PUBLIC_BASE || !ACCESS || !SECRET) throw new Error('R2 public bucket is not configured in backend/.env');
+  if (!BUCKET || !PUBLIC_BASE || !ACCESS || !SECRET) throw new Error('R2 public bucket is not configured in .env');
   const s3 = new S3Client({ region: 'auto', endpoint: ENDPOINT, credentials: { accessKeyId: ACCESS, secretAccessKey: SECRET } });
   const files = fs.readdirSync(CROP).filter((f) => f.endsWith('.jpg') && (!match || f.startsWith(match)));
   let done = 0;
@@ -425,7 +425,7 @@ async function main() {
     console.log('--horde-black=<n> regenerates the Black pool with AI Horde (n per gender)');
     return;
   }
-  if (!BUCKET || !PUBLIC_BASE) throw new Error('R2_PUBLIC_BUCKET / R2_PUBLIC_BASE_URL missing from backend/.env');
+  if (!BUCKET || !PUBLIC_BASE) throw new Error('R2_PUBLIC_BUCKET / R2_PUBLIC_BASE_URL missing from .env');
 
   const hordeArg = process.argv.slice(2).find((a) => a.startsWith('--horde-black'));
   if (hordeArg) {

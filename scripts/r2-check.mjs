@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Validates the R2 configuration in backend/.env WITHOUT printing any values.
+ * Validates the R2 configuration in .env WITHOUT printing any values.
  *
  * Checks:
  *  1. Required R2 keys are present and shaped correctly (names + pass/fail only).
@@ -17,7 +17,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const require = createRequire(new URL('../backend/package.json', import.meta.url));
+const require = createRequire(new URL('../package.json', import.meta.url));
 const { parse } = require('dotenv');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,9 +25,9 @@ const fs = require('node:fs');
 
 let values = {};
 try {
-  values = parse(fs.readFileSync(path.join(root, 'backend', '.env')));
+  values = parse(fs.readFileSync(path.join(root, '.env')));
 } catch {
-  console.error('Cannot read backend/.env.');
+  console.error('Cannot read .env.');
   process.exit(1);
 }
 
@@ -40,7 +40,7 @@ function check(name, ok, detail = '') {
 function info(name, detail) { console.log(`  INFO  ${name}${detail ? ` — ${detail}` : ''}`); }
 
 // ------------------------------------------------------------- 1. key presence
-console.log('== 1. R2 keys in backend/.env (values are never printed)');
+console.log('== 1. R2 keys in .env (values are never printed)');
 
 const ACCOUNT = values.R2_ACCOUNT_ID?.trim();
 const ACCESS = values.R2_ACCESS_KEY_ID?.trim();
