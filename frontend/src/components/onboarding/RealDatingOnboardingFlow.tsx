@@ -19,6 +19,7 @@ import {
   CreditPack,
 } from '../../types';
 import { WassaaApi } from '../../services/api';
+import { packPriceLabel } from '../../lib/money';
 import { COUNTRY_OPTIONS, findCountry, servicesFor } from '../../data/countries';
 import { preparePhoto } from '../../services/media';
 import { track } from '../../services/analytics';
@@ -1066,10 +1067,9 @@ export const RealDatingOnboardingFlow: React.FC<RealDatingOnboardingFlowProps> =
                   <button
                     type="button"
                     onClick={() => onBuyPack(pack.id)}
-                    disabled={initialUser?.creditRegionSupported === false}
                     className="shrink-0 px-4 py-2.5 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] disabled:bg-[#EFEAE4] disabled:text-[#9C958D] text-white text-xs font-semibold transition-colors"
                   >
-                    ₦{pack.priceNgn.toLocaleString()}
+                    {packPriceLabel(pack)}
                   </button>
                 </div>
               </article>

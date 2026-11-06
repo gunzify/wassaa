@@ -115,12 +115,14 @@ export interface UserProfile {
   skill?: string;
   /** Signed-in member only: credit balance and any account sanction. */
   credits?: number;
-  /** Signed-in member only: is a credit pack purchasable in their country? */
+  /** Retained for compatibility: every country can now pay, so this is true. */
   creditRegionSupported?: boolean;
-  /** Signed-in member only: verified member in an unsellable region messages free. */
+  /** Retired: free chat no longer exists; kept so older clients do not break. */
   freeChat?: boolean;
-  /** Signed-in member only: credits granted per day (5 while unverified abroad). */
+  /** Signed-in member only: credits granted per day. */
   dailyCreditAllowance?: number;
+  /** Price band applied to the member's country. */
+  packBand?: 'ng' | 'africa' | 'global';
   accountStatus?: 'active' | 'restricted' | 'banned';
   restrictionReason?: string;
   verification: VerificationData;
@@ -163,10 +165,17 @@ export interface CreditPack {
   id: string;
   name: string;
   tagline: string;
+  /** Exact naira amount charged (Paystack settles this account in NGN). */
   priceNgn: number;
   credits: number;
   features: string[];
   isPopular?: boolean;
+  /** Price band the member's country falls into: ng | africa | global. */
+  band?: 'ng' | 'africa' | 'global';
+  /** Currency the price is displayed in (may differ from the charged one). */
+  displayCurrency?: string;
+  /** Approximate price in `displayCurrency`, major units. */
+  displayPrice?: number;
 }
 
 export interface SubscriptionPlan {

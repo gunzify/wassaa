@@ -13,14 +13,18 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
 }) => {
   return (
     <div className="fixed inset-0 z-50 w-full bg-[#141210] flex flex-col overflow-y-auto select-none">
-      {/* Home hero: uniformed professionals sharing dinner */}
-      <div className="relative w-full h-[54dvh] min-h-[280px] shrink-0">
-        <img
-          src={WASSAA_BRAND.assets.dinnerHero}
-          alt="Nigerian Army, Police, Navy and Civil Defence members sharing dinner together"
-          className="absolute inset-0 w-full h-full object-cover object-[52%_center]"
-          decoding="async"
-        />
+      {/* Home hero: uniformed and essential-service professionals at dusk */}
+      <div className="relative w-full h-[54dvh] min-h-[280px] max-h-[560px] shrink-0">
+        {/* Portrait framing on phones; landscape on tablet and up. */}
+        <picture>
+          <source media="(min-width: 768px)" srcSet={WASSAA_BRAND.assets.dinnerHeroWide} />
+          <img
+            src={WASSAA_BRAND.assets.dinnerHero}
+            alt="Military, aviation, navy and healthcare professionals standing together at dusk"
+            className="absolute inset-0 w-full h-full object-cover object-[50%_16%] md:object-[50%_38%]"
+            decoding="async"
+          />
+        </picture>
         {/* Fade the photo into the panel so the type never fights the scene */}
         <div className="absolute inset-0 bg-gradient-to-t from-[#141210] via-[#141210]/15 to-[#141210]/35 pointer-events-none" />
         <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-[#141210] to-transparent pointer-events-none" />

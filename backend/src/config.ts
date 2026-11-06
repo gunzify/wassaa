@@ -2,6 +2,16 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+// Values that shipped in .env.example or older defaults. They are long enough to
+// pass the length check, so a deploy that copies the example would otherwise sign
+// sessions with a publicly known string.
+const PUBLIC_PLACEHOLDERS = new Set([
+  'change-me-to-a-64-char-random-hex',
+  'wassaa-admin-dev-key',
+  'your-secret-here',
+  'changeme'
+]);
+
 function requiredSecret(name: string, minLength: number): string {
   const value = process.env[name];
   if (!value) {
@@ -11,6 +21,9 @@ function requiredSecret(name: string, minLength: number): string {
   }
   if (value.length < minLength) {
     throw new Error(`${name} must be at least ${minLength} characters.`);
+  }
+  if (PUBLIC_PLACEHOLDERS.has(value.trim().toLowerCase())) {
+    throw new Error(`${name} is still a public example placeholder. Generate a real value with: openssl rand -hex 32`);
   }
   return value;
 }

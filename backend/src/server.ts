@@ -40,7 +40,7 @@ async function createStore(): Promise<Store> {
 function assertProductionConfig(): void {
   if (!config.isProduction) return;
   const problems: string[] = [];
-  if (!process.env.SESSION_JWT_SECRET) problems.push('SESSION_JWT_SECRET is unset (dev default in use)');
+  if (!process.env.SESSION_JWT_SECRET) problems.push('SESSION_JWT_SECRET is unset (signing secret required)');
   if (!process.env.ADMIN_API_KEY || config.adminApiKey === 'wassaa-admin-dev-key') problems.push('ADMIN_API_KEY is unset or the dev default');
   if (config.adminApiKey.length < 24) problems.push('ADMIN_API_KEY should be at least 24 characters');
   if (!config.googleClientId) problems.push('GOOGLE_CLIENT_ID is unset (Google sign-in is unavailable)');

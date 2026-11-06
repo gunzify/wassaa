@@ -864,3 +864,30 @@ Ran the Cloudflare `security-audit` skill over the whole repo (scope: `frontend/
 - The 5-credit daily drip for unverified unsupported-region members still keys off the self-declared country. Deliberate: it is capped at 5/day and cannot be attested before verification.
 - Legacy `backend/src` remains in the repo as a rollback path. No deployment manifest exists for it; the frontend never calls it. Its secrets are now mandatory, so a careless deploy fails closed.
 
+
+## Global credit pricing — every country can pay (2026-11-06)
+
+**Why the old model was wrong.** `wassaa_credit_region_supported` assumed Paystack only sold to `NG, GH, ZA, KE`, and gave verified members everywhere else free messaging. Paystack's own documentation says the opposite: international cards are charged in the merchant's settlement currency and the cardholder's bank converts, so a Nigerian account accepts a Visa/Mastercard/Verve/Amex from 195+ countries. Free chat was gating on a limitation that does not exist.
+
+**Settlement reality (from Paystack docs, do not re-litigate).**
+- NGN is the settlement currency for this account. USD settlement needs activation plus a Zenith domiciliary account; GHS/KES/ZAR each need a separate merchant account in that country.
+- Fees: local 1.5% + ₦100 (capped ₦2,000); international 3.9% + ₦100. Every pack price must survive ~5% on an international card.
+- API minimums: NGN ₦50, USD $2, KES KSh 3.
+
+**The model now.**
+- `wassaa_credit_region_supported()` returns true everywhere; `wassaa_is_free_chat()` returns false. Free chat and the 5-credit "abroad, unverified" drip are gone by construction (`wassaa_daily_drip` reads the same functions).
+- Prices live in `credit_packs` + `credit_pack_prices` (NGN kobo, three bands). Retuning a price is an UPDATE, not a deploy.
+- `wassaa_pack_band(country)` → `ng` | `africa` | `global`; `wassaa_display_currency(country)` + `fx_rates` give an approximate display price. The charge is always `amount_minor` in NGN.
+- `wassaa_credit_packs_for(country)` and `wassaa_credit_pack(code, country)` are the only read paths; both service_role only. `POST /billing/checkout` takes a pack code and resolves the price server-side — a client-supplied price is never trusted.
+
+| Pack | Credits | Nigeria | Rest of Africa | Global |
+|---|---|---|---|---|
+| Starter | 150 | ₦2,000 | ₦4,500 | ₦8,900 (~$6) |
+| Standard | 450 | ₦5,000 | ₦11,000 (~GH₵110) | ₦19,900 (~$13) |
+| Best Value | 1,200 | ₦12,000 | ₦26,000 | ₦44,900 (~$30) |
+
+**Verification (live, 2026-11-06).** `/billing/plans-public?country=` returns the three bands correctly; a US-banded QA member saw `band=global`, was quoted ₦19,900 for Standard, and the `payments` row recorded `amount_kobo=1990000, currency=NGN, credits_amount=450`. `freeChat=false`, `dailyCreditAllowance=1`. Suites: e2e 57/57, admin 83/83, npc 16/16.
+
+**Client.** `frontend/src/lib/money.ts` renders the display currency and appends "charged ₦X" when it differs from naira. `CreditPack` gained `band`, `displayCurrency`, `displayPrice`. The "packs are not sold in your country" card was removed from the store.
+
+**Deployed 2026-11-06** with `npx vercel --prod --yes` from `frontend/`. Live bundle `assets/index-DpkomAsD.js` serves the band-priced store and the new homepage hero. The homepage hero is now a `<picture>`: `wassaa_dinner_hero.jpg` (900x1600 portrait, mobile) and `wassaa_dinner_hero_wide.jpg` (1600x900, >=768px), both generated from the supplied artwork with System.Drawing (no sharp/imagemagick in this project).

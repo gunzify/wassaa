@@ -8,17 +8,18 @@ type Row = Record<string, any>;
 const allowedOrigins = (Deno.env.get('APP_ORIGINS') || 'https://wassaa.app,http://localhost:5173,http://localhost:5174,http://localhost:4173').split(',').map((s) => s.trim());
 // Credit packs replace the retired tier plans (KB §18E): text messages cost 5
 // credits (photos 10), replies are free, real-matched chat stays free, credits
-// never expire. The smallest pack starts at ₦2,000 — the low-price entry tier
-// was removed once per-message pricing matured.
-const CREDIT_PACKS = [
-  { id: 'credit_150', name: 'Starter', tagline: 'Start strong', priceNgn: 2000, credits: 150, period: 'one-time', features: ['150 credits', 'About 30 text messages', 'Credits never expire'] },
-  { id: 'credit_450', name: 'Standard', tagline: 'Most members pick this', priceNgn: 5000, credits: 450, period: 'one-time', isPopular: true, features: ['450 credits', 'About 90 text messages', 'Credits never expire'] },
-  { id: 'credit_1200', name: 'Best Value', tagline: 'Never run dry', priceNgn: 12000, credits: 1200, period: 'one-time', features: ['1,200 credits', 'About 240 text messages', 'Credits never expire'] }
+// never expire.
+//
+// Prices live in the `credit_packs` / `credit_pack_prices` tables so they can be
+// retuned without redeploying this function. The three bands (Nigeria, rest of
+// Africa, global) are resolved per country by `wassaa_credit_packs_for`. This
+// list is only the offline fallback, priced at the Nigerian band.
+const FALLBACK_PACKS = [
+  { id: 'credit_150', name: 'Starter', tagline: 'Start strong', priceNgn: 2000, credits: 150, period: 'one-time', isPopular: false, displayCurrency: 'NGN', displayPrice: 2000, band: 'ng', features: ['150 credits', 'About 30 text messages', 'Credits never expire'] },
+  { id: 'credit_450', name: 'Standard', tagline: 'Most members pick this', priceNgn: 5000, credits: 450, period: 'one-time', isPopular: true, displayCurrency: 'NGN', displayPrice: 5000, band: 'ng', features: ['450 credits', 'About 90 text messages', 'Credits never expire'] },
+  { id: 'credit_1200', name: 'Best Value', tagline: 'Never run dry', priceNgn: 12000, credits: 1200, period: 'one-time', isPopular: false, displayCurrency: 'NGN', displayPrice: 12000, band: 'ng', features: ['1,200 credits', 'About 240 text messages', 'Credits never expire'] }
 ];
-const PLANS = [
-  { id: 'free', name: 'Free', tagline: 'Meet the community', priceNgn: 0, period: 'free', features: ['Browse profiles', '20 free swipes per day, then 1 credit per swipe', '25 free credits on signup', 'Message directly from any profile'] },
-  ...CREDIT_PACKS
-];
+const FREE_PLAN = { id: 'free', name: 'Free', tagline: 'Meet the community', priceNgn: 0, period: 'free', displayCurrency: 'NGN', displayPrice: 0, features: ['Browse profiles', '20 free swipes per day, then 1 credit per swipe', '25 free credits on signup', 'Message directly from any profile'] };
 // Pricing v2 (KB §18E): texts are 5 credits, photos 10, in a mutually liked
 // thread. A cold thread — you have messaged them, they have not liked you
 // back yet — doubles every outgoing message; once they like back, pricing
@@ -37,13 +38,21 @@ const PRICING = {
 } as const;
 const DEFAULT_PRIVACY = { serviceVisibility: 'matches', rankVisibility: 'private', verificationDisplay: 'badge', chatNotifications: true, twoFactorAuth: false, privateIntroductionOptIn: true };
 const MAX_JSON_BYTES = 1_500_000;
-// Paystack settles cards in these markets. Anywhere else a member cannot buy a
-// credit pack, so messaging is free once they are verified and unverified
-// members get a 5-credit daily allowance (KB §18E).
-const SUPPORTED_CREDIT_REGIONS = ['NG', 'GH', 'ZA', 'KE'];
-const creditRegionSupported = (code: string | null | undefined) => SUPPORTED_CREDIT_REGIONS.includes((code || 'NG').toUpperCase());
-const isFreeChat = (p: Row) => Boolean(p.verification_status === 'verified' && !creditRegionSupported(p.country_code));
-const dailyCreditAllowance = (p: Row) => (!creditRegionSupported(p.country_code) && p.verification_status !== 'verified' ? 5 : 1);
+// Paystack charges international cards in the merchant's settlement currency
+// (NGN here) and the cardholder's bank converts, so a card from any of 195+
+// countries can buy a pack. Credit packs are therefore sold everywhere and
+// free chat no longer exists. These helpers stay because the client reads the
+// fields and because the database functions derive from the same policy.
+const creditRegionSupported = (_code: string | null | undefined) => true;
+const isFreeChat = (_p: Row) => false;
+const dailyCreditAllowance = (_p: Row) => 1;
+
+/** Pack catalogue priced for this member's country. Falls back to the NG band. */
+async function packsForCountry(db: ReturnType<typeof createClient>, country: string | null | undefined): Promise<Row[]> {
+  const { data, error } = await db.rpc('wassaa_credit_packs_for', { p_country: (country || 'NG').toUpperCase() });
+  if (error || !Array.isArray(data) || !data.length) return FALLBACK_PACKS;
+  return data as Row[];
+}
 
 function headers(origin: string | null): HeadersInit {
   const allowOrigin = origin && allowedOrigins.includes(origin) ? origin : 'https://wassaa.app';
@@ -869,7 +878,17 @@ Deno.serve(async (req) => {
   const path = functionRoutePath(url.pathname);
   const supabaseUrl = Deno.env.get('SUPABASE_URL'), anon = Deno.env.get('SUPABASE_ANON_KEY'), service = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   if (path === '/health' && req.method === 'GET') return json({ ok: true, service: 'wassaa-supabase-edge-api', time: new Date().toISOString() }, 200, origin);
-  if ((path === '/billing/plans-public' || path === '/billing/plans') && req.method === 'GET') return json({ plans: PLANS, consumables: [] }, 200, origin);
+  if ((path === '/billing/plans-public' || path === '/billing/plans') && req.method === 'GET') {
+    // Public catalogue, priced for `?country=` when given. Signed-in members get
+    // their own band from /billing/entitlements.
+    const country = (cleanString(url.searchParams.get('country') || 'NG', 2) || 'NG').toUpperCase();
+    if (supabaseUrl && service) {
+      const catalogDb = createClient(supabaseUrl, service, { auth: { persistSession: false } });
+      const packs = await packsForCountry(catalogDb, country);
+      return json({ plans: [FREE_PLAN, ...packs], consumables: [], country, band: packs[0]?.band || 'ng' }, 200, origin);
+    }
+    return json({ plans: [FREE_PLAN, ...FALLBACK_PACKS], consumables: [], country }, 200, origin);
+  }
   if (!supabaseUrl || !anon || !service) return err('Server configuration is incomplete.', 503, origin);
   if (path === '/public-config' && req.method === 'GET') return json({ supabaseUrl, publishableKey: anon, googleClientId: Deno.env.get('GOOGLE_CLIENT_ID') || '' }, 200, origin);
   if (path === '/billing/webhook') return handlePaystackWebhook(req);
@@ -1421,27 +1440,35 @@ Deno.serve(async (req) => {
       const credits = fresh?.credits ?? profile.credits ?? 0;
       // "See who liked you" is a credit feature now: unlocked for 24h per reveal.
       const revealed = Boolean(fresh?.revealed_likes_at) && Date.now() - Date.parse(fresh.revealed_likes_at) < 24 * 3600 * 1000;
-      return json({ ...base, canSeeLikes: revealed, credits, revealLikesCost: 15, pricing: { text: PRICING.text, photo: PRICING.photo, coldMultiplier: PRICING.coldMultiplier, freeDailySwipes: PRICING.freeDailySwipes, paidSwipe: PRICING.paidSwipe, superLike: PRICING.superLike, revealLikes: PRICING.revealLikes }, freeChat: isFreeChat(profile), creditRegionSupported: creditRegionSupported(profile.country_code), dailyCreditAllowance: dailyCreditAllowance(profile), countryCode: profile.country_code || 'NG', packs: CREDIT_PACKS.map((p) => ({ id: p.id, name: p.name, tagline: p.tagline, priceNgn: p.priceNgn, credits: p.credits, features: p.features, isPopular: Boolean((p as Row).isPopular) })) }, 200, origin);
+      const countryCode = (profile.country_code || 'NG').toUpperCase();
+      const packs = await packsForCountry(db, countryCode);
+      return json({ ...base, canSeeLikes: revealed, credits, revealLikesCost: 15, pricing: { text: PRICING.text, photo: PRICING.photo, coldMultiplier: PRICING.coldMultiplier, freeDailySwipes: PRICING.freeDailySwipes, paidSwipe: PRICING.paidSwipe, superLike: PRICING.superLike, revealLikes: PRICING.revealLikes }, freeChat: isFreeChat(profile), creditRegionSupported: creditRegionSupported(countryCode), dailyCreditAllowance: dailyCreditAllowance(profile), countryCode, packBand: packs[0]?.band || 'ng', settlementCurrency: 'NGN', packs }, 200, origin);
     }
     if (path === '/billing/checkout' && req.method === 'POST') {
       const limited = await allowAction('checkout', 5, 600); if (limited) return limited;
-      const b = await getBody(), planId = String(b.planId), plan = CREDIT_PACKS.find((p) => p.id === planId) || null;
-      if (!plan) return err('Unknown credit pack.', 400, origin);
+      const b = await getBody(), planId = cleanString(b.planId, 40);
+      // Price is authoritative on the server: the client sends a pack code, the
+      // band comes from the member's country, and `amount_minor` is what is
+      // charged. A client-supplied price is never trusted.
+      const { data: packRow, error: packError } = await db.rpc('wassaa_credit_pack', { p_code: planId, p_country: (profile.country_code || 'NG').toUpperCase() });
+      const plan = (!packError && packRow ? packRow : null) as Row | null;
+      if (!plan || !plan.amountMinor || !plan.credits) return err('Unknown credit pack.', 400, origin);
       const paystackKey = Deno.env.get('PAYSTACK_SECRET_KEY');
       if (!paystackKey) return err('Payments are not configured.', 503, origin);
+      const amountMinor = Number(plan.amountMinor), currency = String(plan.currency || 'NGN');
       const reference = `wss_${crypto.randomUUID().replace(/-/g,'')}`;
       const fallbackEmail = `${String(profile.phone || '').replace(/\D/g, '') || 'member'}@guest.wassaa.ng`;
       const email = cleanString(b.email || user.email || profile.email || fallbackEmail, 200);
       if (!email || !email.includes('@')) return err('A valid email address is required for checkout.', 400, origin);
-      const { error: paymentError } = await db.from('payments').insert({ reference, user_id: uid, plan_id: planId, amount_kobo: plan.priceNgn * 100, currency: 'NGN', status: 'pending', credits_amount: plan.credits });
+      const { error: paymentError } = await db.from('payments').insert({ reference, user_id: uid, plan_id: planId, amount_kobo: amountMinor, currency, status: 'pending', credits_amount: plan.credits });
       if (paymentError) return err('Could not create payment record.', 500, origin);
-      const response = await fetch('https://api.paystack.co/transaction/initialize', { method: 'POST', headers: { Authorization: `Bearer ${paystackKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ reference, amount: plan.priceNgn * 100, currency: 'NGN', email, callback_url: Deno.env.get('PAYSTACK_CALLBACK_URL'), metadata: { planId, credits: plan.credits, userId: uid } }), signal: AbortSignal.timeout(10000) });
+      const response = await fetch('https://api.paystack.co/transaction/initialize', { method: 'POST', headers: { Authorization: `Bearer ${paystackKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ reference, amount: amountMinor, currency, email, callback_url: Deno.env.get('PAYSTACK_CALLBACK_URL'), metadata: { planId, credits: plan.credits, band: plan.band, userId: uid } }), signal: AbortSignal.timeout(10000) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.status || !result.data?.authorization_url) {
         await db.from('payments').update({ status: 'failed' }).eq('reference', reference).eq('status', 'pending');
         return err('Payment provider error. Try again shortly.', 502, origin);
       }
-      return json({ success: true, sandbox: false, reference, authorizationUrl: result.data.authorization_url, amountNaira: plan.priceNgn, credits: plan.credits }, 200, origin);
+      return json({ success: true, sandbox: false, reference, authorizationUrl: result.data.authorization_url, amountNaira: amountMinor / 100, currency, band: plan.band, credits: plan.credits }, 200, origin);
     }
     if (path === '/billing/activate' && req.method === 'POST') {
       const b = await getBody(), reference = cleanString(b.reference, 100);

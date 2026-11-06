@@ -1,6 +1,9 @@
 // WASSAA Brand Identity — Warm Terracotta & Editorial
 import emblem3D from './images/wassaa_brand_emblem_1792677464470.jpg';
 import dinnerHero from './images/wassaa_dinner_hero.jpg';
+// Same shoot, landscape framing — used on tablet and desktop so the group and
+// the skyline survive the crop instead of one enormous face.
+import dinnerHeroWide from './images/wassaa_dinner_hero_wide.jpg';
 
 export const WASSAA_BRAND = {
   name: 'WASSAA',
@@ -22,5 +25,6 @@ export const WASSAA_BRAND = {
   assets: {
     emblem3D,
     dinnerHero,
+    dinnerHeroWide,
   },
 };

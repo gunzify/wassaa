@@ -1,15 +1,16 @@
 import React from 'react';
 import { Coins, X, Zap, MessageCircle, Gift, TrendingUp, ShieldCheck } from 'lucide-react';
 import { CreditPack } from '../../types';
+import { packChargeNote, packPriceLabel } from '../../lib/money';
 
 interface SubscriptionPlansScreenProps {
   credits: number;
   packs: CreditPack[];
-  /** Verified member in a market where credit packs cannot be sold (KB §18E). */
+  /** Retained for compatibility; free chat was retired when packs went global. */
   freeChat?: boolean;
-  /** Whether Paystack can settle in the member's country. */
+  /** Every country can pay now: international cards settle in naira. */
   creditRegionSupported?: boolean;
-  /** Credits granted at the next daily reset (1 everywhere, 5 in unsellable regions). */
+  /** Credits granted at the next daily reset. */
   dailyCreditAllowance?: number;
   onSelectPack: (packId: string) => void;
   onBoost: () => void;
@@ -18,9 +19,9 @@ interface SubscriptionPlansScreenProps {
 
 /** Used when entitlements could not be fetched (offline, first paint). */
 const FALLBACK_PACKS: CreditPack[] = [
-  { id: 'credit_150', name: 'Starter', tagline: 'Start strong', priceNgn: 2000, credits: 150, features: ['150 credits', 'About 30 text messages', 'Credits never expire'] },
-  { id: 'credit_450', name: 'Standard', tagline: 'Most members pick this', priceNgn: 5000, credits: 450, features: ['450 credits', 'About 90 text messages', 'Credits never expire'], isPopular: true },
-  { id: 'credit_1200', name: 'Best Value', tagline: 'Never run dry', priceNgn: 12000, credits: 1200, features: ['1,200 credits', 'About 240 text messages', 'Credits never expire'] },
+  { id: 'credit_150', name: 'Starter', tagline: 'Start strong', priceNgn: 2000, credits: 150, displayCurrency: 'NGN', displayPrice: 2000, features: ['150 credits', 'About 30 text messages', 'Credits never expire'] },
+  { id: 'credit_450', name: 'Standard', tagline: 'Most members pick this', priceNgn: 5000, credits: 450, displayCurrency: 'NGN', displayPrice: 5000, features: ['450 credits', 'About 90 text messages', 'Credits never expire'], isPopular: true },
+  { id: 'credit_1200', name: 'Best Value', tagline: 'Never run dry', priceNgn: 12000, credits: 1200, displayCurrency: 'NGN', displayPrice: 12000, features: ['1,200 credits', 'About 240 text messages', 'Credits never expire'] },
 ];
 
 /**
@@ -38,10 +39,6 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
   onClose
 }) => {
   const visiblePacks = packs.length ? packs : FALLBACK_PACKS;
-  // Where Paystack cannot settle, no pack is purchasable. Verified members
-  // chat free; unverified members still see the verification path, not a
-  // dead buy button.
-  const canBuy = creditRegionSupported;
 
   return (
     <div className="w-full max-w-[430px] mx-auto bg-[#F7F5F0] text-[#1A1816] flex flex-col p-4 md:p-6 font-['Plus_Jakarta_Sans',sans-serif] overflow-y-auto">
@@ -66,29 +63,14 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
         </div>
       </div>
 
-      {!canBuy ? (
-        <div className="bg-white border border-[#E8D5CD] rounded-2xl p-4 mb-5 space-y-2.5 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
-          <div className="flex items-start gap-2.5">
-            <ShieldCheck className="w-4 h-4 text-[#B85A3C] mt-0.5 shrink-0" />
-            <div>
-              <p className="text-sm font-semibold text-[#1A1816]">
-                {freeChat ? 'Chat is free in your region' : 'Credit packs are not sold in your country yet'}
-              </p>
-              <p className="mt-1 text-xs text-[#6B665F] leading-relaxed">
-                {freeChat
-                  ? 'Your identity is verified, so every message you send is free — no credits needed.'
-                  : 'Payment processing does not cover your country yet. Verify your identity and you will message free until packs are available.'}
-              </p>
-            </div>
-          </div>
-          {!freeChat && (
-            <p className="text-xs text-[#6B665F] leading-relaxed">
-              Until then you receive {dailyCreditAllowance} free credit{dailyCreditAllowance === 1 ? '' : 's'} every day.
-            </p>
-          )}
+      <>
+        <div className="bg-white border border-[#E8E4DC] rounded-2xl p-4 mb-5 flex items-start gap-2.5 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+          <ShieldCheck className="w-4 h-4 text-[#B85A3C] mt-0.5 shrink-0" />
+          <p className="text-xs text-[#6B665F] leading-relaxed">
+            Pay with any Visa, Mastercard, Verve or Amex card, anywhere in the world. Prices are shown in your local
+            currency; the card charge is in naira and your bank converts.
+          </p>
         </div>
-      ) : (
-        <>
           {/* How credits work */}
           <div className="bg-white border border-[#E8E4DC] rounded-2xl p-4 mb-5 space-y-2.5 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
             {[
@@ -140,8 +122,11 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
                     <p className="text-xs text-[#6B665F]">{pack.tagline}</p>
                   </div>
                   <div className="text-right shrink-0">
-                    <p className="font-['Space_Mono',monospace] text-lg font-semibold text-[#B85A3C]">₦{pack.priceNgn.toLocaleString()}</p>
+                    <p className="font-['Space_Mono',monospace] text-lg font-semibold text-[#B85A3C]">{packPriceLabel(pack)}</p>
                     <p className="text-[0.7rem] text-[#9C958D]">{pack.credits} credits</p>
+                    {packChargeNote(pack) && (
+                      <p className="text-[0.65rem] text-[#9C958D]">≈ {packChargeNote(pack)}</p>
+                    )}
                   </div>
                 </div>
                 <ul className="mt-3 mb-4 space-y-1">
@@ -157,7 +142,7 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
                   onClick={() => onSelectPack(pack.id)}
                   className="w-full py-2.5 rounded-full bg-[#B85A3C] hover:bg-[#A04E33] text-white text-xs font-semibold tracking-wide transition-colors"
                 >
-                  Get {pack.credits} credits — ₦{pack.priceNgn.toLocaleString()}
+                  Get {pack.credits} credits — {packPriceLabel(pack)}
                 </button>
               </article>
             ))}
@@ -165,8 +150,7 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
               Payments are processed securely by Paystack. Credits never expire and are added the moment payment is confirmed.
             </p>
           </div>
-        </>
-      )}
+      </>
     </div>
   );
 };
