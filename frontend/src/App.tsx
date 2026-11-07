@@ -89,8 +89,8 @@ export default function App() {
   const [packs, setPacks] = useState<CreditPack[]>([]);
   const [likesLocked, setLikesLocked] = useState(true);
   const [likesCost, setLikesCost] = useState(15);
-  // Live credit prices from /billing/entitlements (text 5, photo 10, cold 2x…).
-  const [pricing, setPricing] = useState<Pricing>({ text: 5, photo: 10, coldMultiplier: 2, freeDailySwipes: 20, paidSwipe: 1, superLike: 3, revealLikes: 15 });
+  // Live credit prices from /billing/entitlements (matched 5/10, cold 10/15/20).
+  const [pricing, setPricing] = useState<Pricing>({ text: 5, photo: 10, coldBase: 10, coldStep: 5, coldMax: 3, freeDailySwipes: 20, paidSwipe: 1, superLike: 3, revealLikes: 15 });
   const [identityOrigin, setIdentityOrigin] = useState<ScreenId>('profile_setup');
   const [lastInteractedProfile, setLastInteractedProfile] = useState<UserProfile | null>(null);
   const [blockedUsers, setBlockedUsers] = useState<{ id: string; name: string; reason?: string; date?: string }[]>([]);

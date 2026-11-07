@@ -108,7 +108,14 @@ export async function signInWithGoogleIdToken(idToken: string, nonce: string): P
  * session in the URL fragment, which consumeRedirectSession folds in.
  */
 export async function signUpWithPassword(email: string, password: string): Promise<{ confirmed: boolean }> {
-  const data = await request<Partial<AuthSession>>('signup', 'POST', { email, password });
+  // Send the verification link back to whichever origin the member signed up
+  // on, so production never inherits a localhost redirect.
+  const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/` : undefined;
+  const data = await request<Partial<AuthSession>>('signup', 'POST', {
+    email,
+    password,
+    ...(redirectTo ? { options: { emailRedirectTo: redirectTo } } : {})
+  });
   if ('access_token' in data && data.access_token && data.refresh_token) {
     writeSession(data as AuthSession);
     return { confirmed: true };

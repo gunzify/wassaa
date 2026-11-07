@@ -141,6 +141,21 @@
     }).catch(function (error) { $('#gate-error').textContent = error.message; });
   }
 
+  // ---------- theme (dark / light, persisted per browser) ----------
+  function applyTheme(dark) {
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    var btn = $('#theme');
+    if (btn) {
+      btn.textContent = dark ? 'Light mode' : 'Dark mode';
+      btn.setAttribute('aria-pressed', String(dark));
+    }
+    try { localStorage.setItem('wassaa.adminTheme', dark ? 'dark' : 'light'); } catch (_) { /* storage disabled */ }
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme') === 'dark');
+  $('#theme').addEventListener('click', function () {
+    applyTheme(document.documentElement.getAttribute('data-theme') !== 'dark');
+  });
+
   $('#lock').addEventListener('click', lock);
 
   // ---------- tabs ----------

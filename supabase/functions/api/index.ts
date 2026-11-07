@@ -29,7 +29,11 @@ const FREE_PLAN = { id: 'free', name: 'Free', tagline: 'Meet the community', pri
 const PRICING = {
   text: 5,
   photo: 10,
-  coldMultiplier: 2,
+  // Cold outreach escalates: 10, 15, 20 for text (media doubles the base, so
+  // 20, 25, 30) and stops at three messages until the partner likes back.
+  coldBase: 10,
+  coldStep: 5,
+  coldMax: 3,
   freeDailySwipes: 20,
   paidSwipe: 1,
   superLike: 3,
@@ -73,6 +77,11 @@ function err(message: string, status = 400, origin: string | null = null, code?:
   return json({ error: message, ...(code ? { code } : {}) }, status, origin);
 }
 function cleanString(value: unknown, max = 500): string { return String(value ?? '').trim().slice(0, max); }
+// IDs that reach PostgREST filters (`.or(...)`) must be canonical UUIDs, never
+// free text: a filter string is a query language of its own, so anything else
+// could reshape the predicate. Values read from the database are already UUIDs.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (value: unknown): value is string => typeof value === 'string' && UUID_RE.test(value);
 const ageOf = ageAt;
 
 // ---------------------------------------------------------------- profile detail
@@ -198,6 +207,29 @@ function objectKey(kind: string, userId: string, contentType: string) {
   return `${prefix}/${userId}/${crypto.randomUUID()}.${ext}`;
 }
 function isStorageKey(key: unknown): key is string { return typeof key === 'string' && !!key && !/^https?:\/\//i.test(key) && !key.startsWith('data:') && !key.includes('..'); }
+/** Public asset base for legacy profile-photo URLs. */
+const photoBaseUrl = () => (Deno.env.get('R2_PUBLIC_BASE_URL') || '').replace(/\/$/, '');
+/**
+ * Profile photos are client-supplied, so every entry must point at the owner's
+ * own upload prefix (`photos/<id>/…`). Full public URLs are accepted only on
+ * the configured R2 asset host, and values already stored on the row are kept
+ * (so legacy records can be re-saved). Anything else — a foreign host, another
+ * member's key, a traversal attempt — is dropped. This closes the IDOR where a
+ * member could paste someone else's photo URL into their own profile.
+ */
+function ownedPhotoValues(ownerId: string, values: unknown[], existing: unknown[] = []): string[] {
+  const keep = new Set((existing || []).map((value) => String(value)));
+  const base = photoBaseUrl();
+  const out: string[] = [];
+  for (const raw of values) {
+    const value = cleanString(raw, 600);
+    if (!value) continue;
+    if (keep.has(value)) { out.push(value); continue; }
+    if (isStorageKey(value) && value.startsWith(`photos/${ownerId}/`)) { out.push(value); continue; }
+    if (base && value.startsWith(`${base}/photos/${ownerId}/`)) { out.push(value); continue; }
+  }
+  return [...new Set(out)].slice(0, 8);
+}
 /** Keys the given member owns: their profile photos, ID documents, and sent chat media. */
 function ownedMediaKeys(uid: string, keys: unknown[]): string[] {
   return keys.filter((key): key is string =>
@@ -839,9 +871,11 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
   }
   if (npcPhotosMatch && req.method === 'POST') {
     const b = await bodyJson(req);
-    if (!Array.isArray(b.photos)) return err('photos must be an array of URLs.', 400, origin);
-    const photos = b.photos.map((v: unknown) => cleanString(v, 600)).filter((v: string) => /^https:\/\//i.test(v)).slice(0, 8);
-    const { data: npc } = await db.from('profiles').select('id,is_npc,npc').eq('id', npcPhotosMatch[1]).maybeSingle();
+    if (!Array.isArray(b.photos)) return err('photos must be an array of image URLs or keys.', 400, origin);
+    const { data: npc } = await db.from('profiles').select('id,is_npc,npc,photos').eq('id', npcPhotosMatch[1]).maybeSingle();
+    // Same ownership rule as member photos: only this persona's own upload
+    // prefix (or a value already on the row) can be saved.
+    const photos = ownedPhotoValues(npcPhotosMatch[1], b.photos, npc?.photos || []);
     if (!npc?.is_npc) return err('NPC not found.', 404, origin);
     // A photo uploaded by a human is the final word: mark the persona `manual`
     // so the automatic pool dealer never re-deals over it, and put it live now.
@@ -969,7 +1003,7 @@ Deno.serve(async (req) => {
       }
       if (update.gender !== undefined && !['female','male'].includes(update.gender)) return err('Choose a valid gender.', 400, origin);
       if (update.name !== undefined && !update.name) return err('Name cannot be empty.', 400, origin);
-      if (Array.isArray(b.photos)) update.photos = b.photos.map((v: unknown) => cleanString(v, 600)).filter((v: string) => /^https:\/\//i.test(v) || /^\/(?!\/)/.test(v)).slice(0, 8);
+      if (Array.isArray(b.photos)) update.photos = ownedPhotoValues(uid, b.photos, profile.photos || []);
       if (Array.isArray(b.interests)) update.interests = b.interests.map((v: unknown) => cleanString(v, 80)).filter(Boolean).slice(0, 8);
       // Onboarding steps 7–9: these used to be collected and thrown away.
       if (Array.isArray(b.prompts)) update.prompts = cleanPrompts(b.prompts);
@@ -1129,7 +1163,7 @@ Deno.serve(async (req) => {
     if (path === '/likes' && req.method === 'POST') {
       const limited = await allowAction('like', 120, 600); if (limited) return limited;
       const b = await getBody(), targetId = cleanString(b.targetUserId, 64), kind = b.superLike ? 'super' : 'like';
-      if (!targetId || targetId === uid) return err('You cannot like your own profile.', 400, origin);
+      if (!isUuid(targetId) || targetId === uid) return err('You cannot like your own profile.', 400, origin);
       const { data: target } = await db.from('profiles').select('*').eq('id', targetId).is('deleted_at', null).maybeSingle();
       if (!target || target.blocked_us) return err('Profile not found.', 404, origin);
       // Super Likes cost 3 credits; plain likes stay free under the daily
@@ -1192,14 +1226,15 @@ Deno.serve(async (req) => {
     // Cold opens: a member may message someone they have not matched with.
     // The thread lives in `matches` like any other thread but carries no
     // "You matched" system line — that belongs to genuine mutual swipes —
-    // and every outgoing message costs 2x until the partner likes back
-    // (computed at send time by wassaa_send_message, so pricing drops to
-    // normal the moment they do). Blocks, deleted and self targets are kept
+    // and cold pricing escalates 10 → 15 → 20 for text (media 20 → 25 → 30),
+    // capped at three messages until the partner likes back. Pricing is
+    // computed at send time by wassaa_send_message, so it drops to the normal
+    // 5/10 the moment they do. Blocks, deleted and self targets are kept
     // out; 15 opened threads per hour keeps mass-cold-messaging down.
     if (path === '/direct-threads' && req.method === 'POST') {
       const limited = await allowAction('dm_open', 15, 3600); if (limited) return limited;
       const b = await getBody(), targetId = cleanString(b.profileId || b.targetUserId, 64);
-      if (!targetId || targetId === uid) return err('Invalid message target.', 400, origin);
+      if (!isUuid(targetId) || targetId === uid) return err('Invalid message target.', 400, origin);
       const { data: target } = await db.from('profiles').select('*').eq('id', targetId).is('deleted_at', null).maybeSingle();
       if (!target || target.blocked_us) return err('Profile not found.', 404, origin);
       const { data: block } = await db.from('blocks').select('id').or(`and(blocker_id.eq.${uid},blocked_id.eq.${targetId}),and(blocker_id.eq.${targetId},blocked_id.eq.${uid})`).limit(1);
@@ -1221,7 +1256,7 @@ Deno.serve(async (req) => {
     if (path === '/passes' && req.method === 'POST') {
       const limited = await allowAction('pass', 300, 600); if (limited) return limited;
       const b = await getBody(), targetId = cleanString(b.targetUserId, 64);
-      if (!targetId || targetId === uid) return err('Invalid pass target.', 400, origin);
+      if (!isUuid(targetId) || targetId === uid) return err('Invalid pass target.', 400, origin);
       const { data: target } = await db.from('profiles').select('id,blocked_us').eq('id', targetId).is('deleted_at', null).maybeSingle();
       if (!target || target.blocked_us) return err('Profile not found.', 404, origin);
       const { data: block } = await db.from('blocks').select('id').or(`and(blocker_id.eq.${uid},blocked_id.eq.${targetId}),and(blocker_id.eq.${targetId},blocked_id.eq.${uid})`).limit(1);
@@ -1310,6 +1345,7 @@ Deno.serve(async (req) => {
       if (sendError) return err('Could not send message.', 500, origin);
       const outcome = Array.isArray(result) ? result[0] : result;
       if (outcome?.error === 'no_credits') return err('You are out of credits. Top up to keep chatting.', 402, origin, 'CREDITS_NEEDED');
+      if (outcome?.error === 'cold_limit') return err(String(outcome.message || 'You can send up to 3 messages before they like you back.'), 403, origin, 'COLD_LIMIT');
       if (outcome?.error === 'blocked' || outcome?.error === 'forbidden') return err('This conversation is unavailable.', 403, origin);
       if (outcome?.error) return err('Could not send message.', 500, origin);
       const { data: sent } = await db.from('messages').select('*').eq('id', outcome.messageId).maybeSingle();
@@ -1442,7 +1478,7 @@ Deno.serve(async (req) => {
       const revealed = Boolean(fresh?.revealed_likes_at) && Date.now() - Date.parse(fresh.revealed_likes_at) < 24 * 3600 * 1000;
       const countryCode = (profile.country_code || 'NG').toUpperCase();
       const packs = await packsForCountry(db, countryCode);
-      return json({ ...base, canSeeLikes: revealed, credits, revealLikesCost: 15, pricing: { text: PRICING.text, photo: PRICING.photo, coldMultiplier: PRICING.coldMultiplier, freeDailySwipes: PRICING.freeDailySwipes, paidSwipe: PRICING.paidSwipe, superLike: PRICING.superLike, revealLikes: PRICING.revealLikes }, freeChat: isFreeChat(profile), creditRegionSupported: creditRegionSupported(countryCode), dailyCreditAllowance: dailyCreditAllowance(profile), countryCode, packBand: packs[0]?.band || 'ng', settlementCurrency: 'NGN', packs }, 200, origin);
+      return json({ ...base, canSeeLikes: revealed, credits, revealLikesCost: 15, pricing: { text: PRICING.text, photo: PRICING.photo, coldBase: PRICING.coldBase, coldStep: PRICING.coldStep, coldMax: PRICING.coldMax, freeDailySwipes: PRICING.freeDailySwipes, paidSwipe: PRICING.paidSwipe, superLike: PRICING.superLike, revealLikes: PRICING.revealLikes }, freeChat: isFreeChat(profile), creditRegionSupported: creditRegionSupported(countryCode), dailyCreditAllowance: dailyCreditAllowance(profile), countryCode, packBand: packs[0]?.band || 'ng', settlementCurrency: 'NGN', packs }, 200, origin);
     }
     if (path === '/billing/checkout' && req.method === 'POST') {
       const limited = await allowAction('checkout', 5, 600); if (limited) return limited;
@@ -1462,7 +1498,16 @@ Deno.serve(async (req) => {
       if (!email || !email.includes('@')) return err('A valid email address is required for checkout.', 400, origin);
       const { error: paymentError } = await db.from('payments').insert({ reference, user_id: uid, plan_id: planId, amount_kobo: amountMinor, currency, status: 'pending', credits_amount: plan.credits });
       if (paymentError) return err('Could not create payment record.', 500, origin);
-      const response = await fetch('https://api.paystack.co/transaction/initialize', { method: 'POST', headers: { Authorization: `Bearer ${paystackKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ reference, amount: amountMinor, currency, email, callback_url: Deno.env.get('PAYSTACK_CALLBACK_URL'), metadata: { planId, credits: plan.credits, band: plan.band, userId: uid } }), signal: AbortSignal.timeout(10000) });
+      // The callback must land on the deployed app, never on a developer's
+      // machine. A localhost value in the secret used to send production
+      // payers to an unreachable page, so it is rejected here and replaced
+      // with the HTTPS app origin + /payment/callback (a static page that
+      // closes the checkout popup; the opener polls /billing/activate).
+      const configuredCallback = Deno.env.get('PAYSTACK_CALLBACK_URL') || '';
+      const callbackUrl = /^https:\/\//i.test(configuredCallback) && !/(localhost|127\.0\.0\.1)/i.test(configuredCallback)
+        ? configuredCallback
+        : `${(allowedOrigins.find((o) => o.startsWith('https://') && !o.includes('wassaa.app')) || 'https://wassaa.vercel.app').replace(/\/$/, '')}/payment/callback`;
+      const response = await fetch('https://api.paystack.co/transaction/initialize', { method: 'POST', headers: { Authorization: `Bearer ${paystackKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ reference, amount: amountMinor, currency, email, callback_url: callbackUrl, metadata: { planId, credits: plan.credits, band: plan.band, userId: uid } }), signal: AbortSignal.timeout(10000) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.status || !result.data?.authorization_url) {
         await db.from('payments').update({ status: 'failed' }).eq('reference', reference).eq('status', 'pending');

@@ -891,3 +891,60 @@ Ran the Cloudflare `security-audit` skill over the whole repo (scope: `frontend/
 **Client.** `frontend/src/lib/money.ts` renders the display currency and appends "charged ₦X" when it differs from naira. `CreditPack` gained `band`, `displayCurrency`, `displayPrice`. The "packs are not sold in your country" card was removed from the store.
 
 **Deployed 2026-11-06** with `npx vercel --prod --yes` from `frontend/`. Live bundle `assets/index-DpkomAsD.js` serves the band-priced store and the new homepage hero. The homepage hero is now a `<picture>`: `wassaa_dinner_hero.jpg` (900x1600 portrait, mobile) and `wassaa_dinner_hero_wide.jpg` (1600x900, >=768px), both generated from the supplied artwork with System.Drawing (no sharp/imagemagick in this project).
+
+## Cold-DM pricing + security hardening (2026-11-07)
+
+### Message pricing (authoritative: `wassaa_send_message`)
+- **Mutually matched thread:** text 5 credits, photo/media 10.
+- **Cold outreach** (one-sided until the partner likes back): text
+  10 → 15 → 20; media 20 → 25 → 30 (media = base + step per prior message).
+- **Hard cap:** three outgoing messages in a cold thread. The fourth returns
+  `{ error: "cold_limit" }`; the Edge API maps it to HTTP 403 `COLD_LIMIT`.
+- Once both sides have a non-pass swipe the same function charges 5/10
+  automatically on the next send. Free-chat accounts (legacy) pay 0.
+- Migration: `supabase/migrations/20261107000000_cold_dm_pricing.sql`.
+
+### Swipes
+- 20 free right-swipes per day per member; every further swipe costs 1 credit.
+- Super Like 3 credits. Reveal-likes 15 credits (24h unlock).
+
+### Photos / IDOR
+- Profile-photo writes are ownership-checked (`ownedPhotoValues`): a stored
+  value must be the owner's own `photos/<id>/…` key or a URL on the configured
+  R2 asset host. Existing values on the row are preserved. This stops a member
+  from pasting another member's photo URL into their own profile.
+- NPC photo lists use the same rule, scoped to the persona id.
+- Verification documents stay in the private bucket behind 5-minute signed GETs.
+- **Remaining:** profile photos are still delivered from the public R2 bucket
+  (`R2_PUBLIC_BUCKET` / `R2_PUBLIC_BASE_URL`). They are unguessable but anyone
+  holding the URL can fetch them. Moving them to the private bucket + signing
+  every payload is the next storage migration.
+
+### Payments callback
+- `PAYSTACK_CALLBACK_URL` must be an HTTPS app origin; the Edge API rejects a
+  localhost value and falls back to `<https app origin>/payment/callback`.
+- `/payment/callback/` is a static branded page (in `frontend/public/payment/`)
+  that confirms the reference when the browser holds a session and closes the
+  checkout tab. The app window polls `/billing/activate` and updates credits.
+
+### Email verification (Brevo question)
+- No Brevo code exists. Verification is Supabase Auth: password sign-up with
+  "Confirm email" enabled sends the template link; the app now passes
+  `emailRedirectTo` = the signing-up origin, so links return to the right host.
+- A 6-digit OTP helper (`sendEmailOtp` / `confirmEmailOtp`) is implemented in
+  `frontend/src/services/supabase-auth.ts` but no screen uses it.
+- SMTP (e.g. Brevo) and the Site URL / Redirect allow-list are Supabase
+  dashboard settings, not code.
+
+### Admin console
+- `/admin/` now has a light/dark theme toggle (persisted in `localStorage`,
+  key `wassaa.adminTheme`, defaults to the OS preference) and a persistent
+  left sidebar on screens ≥1000px. All console surfaces use theme tokens.
+
+### Input validation
+- IDs that reach PostgREST `.or(...)` filters are validated as canonical UUIDs
+  before interpolation. There is no raw SQL string concatenation in the API;
+  PostgREST/RPC parameters are bound.
+- API CORS is an explicit allow-list (`APP_ORIGINS`); requests carrying a
+  disallowed `Origin` are rejected with 403. Auth uses bearer tokens (no
+  cookies), so cross-site form posts cannot carry a session.

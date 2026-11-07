@@ -4,7 +4,10 @@ import { UserProfile, UserPrivacySettings, MatchItem, ChatMessage, SubscriptionT
 export interface Pricing {
   text: number;
   photo: number;
-  coldMultiplier: number;
+  /** Cold outreach: first message, +step per follow-up, hard cap. */
+  coldBase?: number;
+  coldStep?: number;
+  coldMax?: number;
   freeDailySwipes: number;
   paidSwipe: number;
   superLike: number;

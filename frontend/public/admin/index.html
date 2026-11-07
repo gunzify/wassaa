@@ -6,11 +6,21 @@
     <meta name="robots" content="noindex, nofollow" />
     <title>WASSAA — Integrity Console</title>
     <link rel="stylesheet" href="/admin/styles.css" />
+    <script>
+      // Apply the saved (or system) theme before first paint to avoid a flash.
+      (function () {
+        try {
+          var saved = localStorage.getItem('wassaa.adminTheme');
+          var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+          document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        } catch (_) {}
+      })();
+    </script>
     <style>
       /* Console-only additions for the expansion surfaces (KB §18). */
-      .conv { max-height: 420px; overflow-y: auto; padding: 14px 18px; display: grid; gap: 8px; background: #fdfcf9; border-top: 1px solid var(--border); }
+      .conv { max-height: 420px; overflow-y: auto; padding: 14px 18px; display: grid; gap: 8px; background: var(--surface-2); border-top: 1px solid var(--border); }
       .bubble { max-width: 80%; padding: 8px 12px; border-radius: 14px; font-size: 13px; line-height: 1.4; }
-      .bubble.them { background: #f1ede6; justify-self: start; border-bottom-left-radius: 4px; }
+      .bubble.them { background: var(--bubble-them); justify-self: start; border-bottom-left-radius: 4px; }
       .bubble.me { background: var(--brand-wash); justify-self: end; border-bottom-right-radius: 4px; }
       .bubble.flagged { outline: 2px solid var(--danger); }
       .bubble .sender { display: block; font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
@@ -20,12 +30,12 @@
       .thumb-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
       .thumb-row img { width: 56px; height: 56px; object-fit: cover; border-radius: 10px; border: 1px solid var(--border); cursor: zoom-in; }
       .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 0; }
-      .toolbar select, .toolbar input[type="search"] { padding: 8px 11px; border: 1px solid var(--border); border-radius: 12px; font: inherit; font-size: 13px; background: #fdfcf9; }
+      .toolbar select, .toolbar input[type="search"] { padding: 8px 11px; border: 1px solid var(--border); border-radius: 12px; font: inherit; font-size: 13px; background: var(--surface-2); color: var(--ink); }
       .toolbar input[type="search"] { min-width: 200px; }
-      .state { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 999px; background: #f4f1ea; color: var(--muted); }
+      .state { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 999px; background: var(--surface-3); color: var(--muted); }
       .state.admin_owned { background: var(--brand-wash); color: var(--brand); }
-      .state.quiet { background: #fdf6e3; color: #8a6d1a; }
-      .state.active { background: #eef6f1; color: var(--verified); }
+      .state.quiet { background: var(--quiet-wash); color: var(--quiet-ink); }
+      .state.active { background: var(--verified-wash); color: var(--verified); }
       .npc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; margin-top: 14px; }
       .npc { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; }
       .npc .cover { aspect-ratio: 4 / 3; background: #141414; }
@@ -36,18 +46,18 @@
       .npc .body .meta { font-family: var(--mono); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
       .npc .body .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
       .npc .body .btn { padding: 6px 10px; font-size: 12px; }
-      .overlay { position: fixed; inset: 0; background: rgba(17, 15, 13, 0.55); display: grid; place-items: start center; overflow-y: auto; padding: 24px; z-index: 40; }
-      .sheet { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; width: min(760px, 96vw); overflow: hidden; box-shadow: 0 20px 60px -12px rgba(0,0,0,0.4); }
+      .overlay { position: fixed; inset: 0; background: var(--overlay); display: grid; place-items: start center; overflow-y: auto; padding: 24px; z-index: 40; }
+      .sheet { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; width: min(760px, 96vw); overflow: hidden; box-shadow: var(--shadow-lg); }
       .sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); }
       .sheet-head strong { font-family: Georgia, serif; font-size: 18px; }
       .composer { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); }
-      .composer input { flex: 1; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; font: inherit; background: #fdfcf9; }
+      .composer input { flex: 1; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; font: inherit; background: var(--surface-2); color: var(--ink); }
       .overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 0 0 18px; }
       .overview .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; cursor: pointer; text-align: left; font: inherit; color: inherit; }
       .overview .card b { display: block; font-size: 22px; font-family: Georgia, serif; font-weight: 400; }
       .overview .card span { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
       .overview .card.alert b { color: var(--danger); }
-      .badge-paid { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 7px; border-radius: 999px; background: #eef6f1; color: var(--verified); }
+      .badge-paid { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 7px; border-radius: 999px; background: var(--verified-wash); color: var(--verified); }
       .npc .body .flagline { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
       @media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } .audit-row { grid-template-columns: 1fr; gap: 2px; } }
     </style>
@@ -78,6 +88,7 @@
         </nav>
         <div class="top-actions">
           <span id="storage-flag" class="flag"></span>
+          <button id="theme" class="btn ghost" type="button" aria-label="Toggle dark mode">Dark mode</button>
           <button id="refresh" class="btn ghost" type="button">Refresh</button>
           <button id="lock" class="btn ghost" type="button">Lock</button>
         </div>

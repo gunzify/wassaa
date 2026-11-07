@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>WASSAA — Payment received</title>
+    <style>
+      :root { color-scheme: light dark; --canvas:#f7f5f0; --surface:#fff; --border:#e8e4dc; --ink:#1a1816; --muted:#6b665f; --brand:#b85a3c; --ok:#2c6b56; }
+      @media (prefers-color-scheme: dark) { :root { --canvas:#121110; --surface:#1b1a18; --border:#302d29; --ink:#f4f1ea; --muted:#a9a29a; --brand:#e07a55; --ok:#5fb894; } }
+      * { box-sizing: border-box; }
+      body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; background:var(--canvas); color:var(--ink); font:15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", sans-serif; }
+      .card { width:100%; max-width:420px; background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:28px; box-shadow:0 8px 32px -10px rgba(0,0,0,.22); text-align:center; }
+      .mark { font-family:Georgia, serif; font-weight:700; letter-spacing:.14em; color:var(--brand); font-size:13px; }
+      .tick { width:52px; height:52px; margin:18px auto 12px; border-radius:50%; background:color-mix(in srgb, var(--ok) 16%, transparent); color:var(--ok); display:grid; place-items:center; font-size:26px; }
+      h1 { font-family:Georgia, serif; font-size:24px; margin:0 0 6px; }
+      p { margin:0 0 10px; color:var(--muted); font-size:14px; }
+      code { font-family:ui-monospace, Menlo, monospace; font-size:12px; background:color-mix(in srgb, var(--ink) 8%, transparent); padding:2px 6px; border-radius:6px; color:var(--ink); word-break:break-all; }
+      .btn { display:inline-block; margin-top:16px; padding:11px 18px; border-radius:999px; background:var(--brand); color:#fff; text-decoration:none; font-weight:600; font-size:14px; }
+      .status { margin-top:14px; font-size:13px; color:var(--muted); }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="mark">WASSAA</div>
+      <div class="tick" aria-hidden="true">&#10003;</div>
+      <h1>Payment received</h1>
+      <p>Your credits are being confirmed. You can close this tab — the WASSAA app updates automatically.</p>
+      <p id="ref-line" hidden>Reference <code id="ref"></code></p>
+      <div class="status" id="status"></div>
+      <a class="btn" href="/" id="back">Return to WASSAA</a>
+    </main>
+    <script>
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var reference = params.get('reference') || params.get('trxref') || '';
+        if (reference) {
+          document.getElementById('ref').textContent = reference;
+          document.getElementById('ref-line').hidden = false;
+        }
+        // Best-effort confirmation using the session this browser already holds
+        // (same origin, so localStorage is shared with the app tab).
+        var raw = null;
+        try { raw = localStorage.getItem('wassaa_supabase_auth_v1'); } catch (_) {}
+        var session = null;
+        try { session = raw ? JSON.parse(raw) : null; } catch (_) { session = null; }
+        var api = 'https://avlbsficfejvwokxkgyl.supabase.co/functions/v1/api';
+        var key = 'sb_publishable_5U23gok0nFHSMByf2GuB6Q_x4Cj_bvv';
+        var statusEl = document.getElementById('status');
+        if (reference && session && session.access_token) {
+          statusEl.textContent = 'Confirming your credits…';
+          fetch(api + '/billing/activate', {
+            method: 'POST',
+            headers: { apikey: key, Authorization: 'Bearer ' + session.access_token, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reference: reference })
+          }).then(function (res) { return res.json().then(function (json) { return { ok: res.ok, json: json }; }); })
+            .then(function (result) {
+              if (result.ok) {
+                statusEl.textContent = (result.json.credits != null ? result.json.credits : 'Your') + ' credits are in your balance.';
+              } else {
+                statusEl.textContent = result.json.error || 'Payment is still being confirmed — check the app in a moment.';
+              }
+            })
+            .catch(function () { statusEl.textContent = 'Payment is still being confirmed — check the app in a moment.'; });
+        }
+        // A tab opened with window.open can close itself; leave a manual button
+        // for browsers that refuse.
+        window.setTimeout(function () { try { window.close(); } catch (_) {} }, 6000);
+      })();
+    </script>
+  </body>
+</html>

@@ -42,7 +42,7 @@ interface ChatScreenProps {
   onUnblockUser?: (partner: UserProfile) => Promise<void> | void;
   onViewProfile?: (partner: UserProfile) => void;
   /** Live credit prices from /billing/entitlements; drives the composer hint. */
-  pricing?: { text: number; photo: number; coldMultiplier: number };
+  pricing?: { text: number; photo: number; coldBase?: number; coldStep?: number; coldMax?: number };
 }
 
 /**
@@ -441,7 +441,9 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
             ) : (
               <p className="flex items-center gap-1.5 px-4 pt-2.5 text-[0.75rem] text-ink-muted">
                 <Coins className="h-3.5 w-3.5" /> Text {pricing.text} · Photo {pricing.photo} credits
-                {pricing.coldMultiplier > 1 && pricing.coldMultiplier !== 1 ? ` · unmatched chats ×${pricing.coldMultiplier}` : ''}
+                {pricing.coldBase && pricing.coldStep && pricing.coldMax
+                  ? ` · not-yet-matched: ${pricing.coldBase}, +${pricing.coldStep} each, max ${pricing.coldMax}`
+                  : ''}
                 {typeof credits === 'number' ? ` · ${credits} left` : ''}
               </p>
             )}
