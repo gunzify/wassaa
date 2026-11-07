@@ -275,6 +275,11 @@ const ACCOUNTS = {
     },
     location: { latitude: 7.15, longitude: 3.35 },        // Abeokuta ~70 km away
     prefs: { gender: 'men', minAge: 18, maxAge: 45, maxDistanceKm: 100 }
+  },
+  c: {
+    label: 'C',
+    email: `qa-smoke-c-${stamp}@wassaa.test`,
+    password: `QA-Smoke!${stamp}-cC1`
   }
 };
 
@@ -325,6 +330,12 @@ async function main() {
   const sessionB = await api('/auth/session', { token: tokenB });
   check('second account profile linked', sessionB.status === 200 && Boolean(sessionB.data?.user?.id));
   if (sessionB.data?.user?.id) createdProfileIds.push(sessionB.data.user.id);
+
+  // Photos must live under the owner's own storage prefix now, so the fixture
+  // uses real keys instead of example.com URLs (which the API rightly drops).
+  const ownedPhotos = (id, tag) => [1, 2].map((n) => `photos/${id}/qa-${tag}-${n}.jpg`);
+  if (sessionA.data?.user?.id) ACCOUNTS.a.profile.photos = ownedPhotos(sessionA.data.user.id, 'a');
+  if (sessionB.data?.user?.id) ACCOUNTS.b.profile.photos = ownedPhotos(sessionB.data.user.id, 'b');
 
   step('2. Onboarding gate blocks incomplete profiles');
   const gatedDiscovery = await api('/discovery', { token: tokenA });
@@ -386,6 +397,72 @@ async function main() {
   check('5 km radius excludes the ~70 km candidate', tightDeck.status === 200 && !tightB, `status ${tightDeck.status}`);
   const restorePrefs = await api('/me/preferences', { token: tokenA, method: 'PATCH', body: ACCOUNTS.a.prefs });
   check('radius restored to 100 km', restorePrefs.status === 200, `status ${restorePrefs.status}`);
+
+  step('6a. Photo lists reject media the member does not own');
+  const foreign = [
+    ...ACCOUNTS.a.profile.photos,
+    'https://example.com/somebody-else.jpg',
+    `photos/${createdProfileIds[1]}/borrowed.jpg`,
+    'https://cdn.example.org/other-member/photo.jpg'
+  ];
+  const planted = await api('/me/profile', { token: tokenA, method: 'PATCH', body: { photos: foreign } });
+  check('profile save accepts the request', planted.status === 200, `status ${planted.status}: ${planted.data?.error || planted.data?.code || ''}`);
+  const afterPhotos = await api('/me/profile', { token: tokenA });
+  const storedPhotos = afterPhotos.data?.user?.photos || [];
+  check('foreign photo URLs and keys are dropped on save',
+    storedPhotos.length === ACCOUNTS.a.profile.photos.length &&
+      storedPhotos.every((p) => String(p).startsWith(`photos/${createdProfileIds[0]}/`)),
+    JSON.stringify(storedPhotos));
+  check('no borrowed photo survived from another member',
+    !storedPhotos.some((p) => String(p).includes(createdProfileIds[1])));
+
+  step('6b. Cold outreach prices 10/15/20 and stops at three messages');
+  const idC = await createUser(ACCOUNTS.c);
+  info('created auth user', `C=${idC}`);
+  const tokenC = await signIn(ACCOUNTS.c.email, ACCOUNTS.c.password);
+  const sessionC = await api('/auth/session', { token: tokenC });
+  const coldTargetId = sessionC.data?.user?.id || '';
+  if (coldTargetId) createdProfileIds.push(coldTargetId);
+  check('third account signs in and links a profile', Boolean(tokenC && coldTargetId), `status ${sessionC.status}`);
+
+  const entitlements = await api('/billing/entitlements', { token: tokenA });
+  const coldBase = Number(entitlements.data?.pricing?.coldBase);
+  const coldStep = Number(entitlements.data?.pricing?.coldStep);
+  const coldMax = Number(entitlements.data?.pricing?.coldMax);
+  check('cold pricing is published to the client',
+    coldBase === 10 && coldStep === 5 && coldMax === 3,
+    JSON.stringify(entitlements.data?.pricing || null));
+
+  // Fund A explicitly so the ladder is affordable regardless of the signup grant.
+  await call(`${REST}/profiles?id=eq.${createdProfileIds[0]}`, { method: 'PATCH', key: SERVICE_KEY, body: { credits: 120 } });
+  const coldOpen = await api('/direct-threads', { token: tokenA, method: 'POST', body: { profileId: coldTargetId } });
+  const coldMatchId = coldOpen.data?.matchId || '';
+  check('a cold thread opens before any mutual like', coldOpen.status === 200 && Boolean(coldMatchId), `status ${coldOpen.status}`);
+
+  if (coldMatchId) {
+    let expectedBalance = 120;
+    for (let i = 0; i < coldMax; i++) {
+      const price = coldBase + coldStep * i;
+      expectedBalance -= price;
+      const send = await api(`/matches/${coldMatchId}/messages`, {
+        token: tokenA, method: 'POST', body: { kind: 'text', text: `cold message ${i + 1}` }
+      });
+      const balance = Number(send.data?.balance);
+      check(`cold message ${i + 1} costs ${price} credits`,
+        send.status === 200 && balance === expectedBalance, `status ${send.status}, balance ${balance} (expected ${expectedBalance})`);
+    }
+    const capped = await api(`/matches/${coldMatchId}/messages`, {
+      token: tokenA, method: 'POST', body: { kind: 'text', text: 'cold message 4 must be refused' }
+    });
+    check('a fourth cold message is refused with 403 COLD_LIMIT',
+      capped.status === 403 && capped.data?.code === 'COLD_LIMIT', `status ${capped.status}, code ${capped.data?.code}`);
+    // C is intentionally a bare profile (no onboarding), so read the thread with
+    // the service key to prove delivery rather than through the member gate.
+    const coldRows = await call(`${REST}/messages?match_id=eq.${coldMatchId}&select=text`, { key: SERVICE_KEY });
+    check('the recipient still receives all three messages',
+      coldRows.status === 200 && (coldRows.data || []).filter((m) => String(m.text || '').startsWith('cold message')).length === 3,
+      `status ${coldRows.status}`);
+  }
 
   step('7. Mutual like creates a match');
   const likeA = await api('/likes', { token: tokenA, method: 'POST', body: { targetUserId: createdProfileIds[1] } });

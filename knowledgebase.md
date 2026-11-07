@@ -948,3 +948,25 @@ Ran the Cloudflare `security-audit` skill over the whole repo (scope: `frontend/
 - API CORS is an explicit allow-list (`APP_ORIGINS`); requests carrying a
   disallowed `Origin` are rejected with 403. Auth uses bearer tokens (no
   cookies), so cross-site form posts cannot carry a session.
+
+### Persona threads price as matched (2026-11-07, later)
+A persona never swipes back, so treating it as "cold" would have capped every
+member/NPC conversation at three messages while the engine kept replying.
+`wassaa_send_message` now charges persona threads the matched rate (text 5,
+media 10) with no cold cap; `mutual` is reported true for them. Real-member
+outreach keeps the 10/15/20 ladder and the three-message cap.
+Migration: `20261107010000_persona_threads_are_warm.sql`.
+
+### When the Supabase CLI panics
+`supabase db push` / `db query` occasionally die with a Bun "Illegal
+instruction" panic on this machine. `node scripts/apply-sql.mjs <file.sql>`
+applies a migration with node-postgres and records its version in
+`supabase_migrations.schema_migrations`.
+
+### Frontend security headers
+`frontend/vercel.json` sends CSP, HSTS, `X-Content-Type-Options`,
+`Referrer-Policy`, `X-Frame-Options: DENY` and a `Permissions-Policy` that keeps
+geolocation for self only. The CSP allows `'unsafe-inline'` scripts because the
+built HTML carries the pre-paint theme bootstrap; remote script hosts are
+limited to Google Identity Services. Supabase (HTTP + websocket), the R2
+S3 endpoint, Google and PostHog are the only permitted `connect-src` origins.
