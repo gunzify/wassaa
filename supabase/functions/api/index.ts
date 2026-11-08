@@ -5,7 +5,7 @@ import { ageAt, greatCircleDistanceKm, isOnboardingComplete } from './domain.ts'
 import { tickMatch, tickUserThreads } from './npc.ts';
 import { notificationsRoute, adminNotificationsRoute } from './notifications.ts';
 
-type Row = Record<string, any>;
+export type Row = Record<string, any>;
 const allowedOrigins = (Deno.env.get('APP_ORIGINS') || 'https://wassaa.app,http://localhost:5173,http://localhost:5174,http://localhost:4173').split(',').map((s) => s.trim());
 // Credit packs replace the retired tier plans (KB §18E): text messages cost 5
 // credits (photos 10), replies are free, real-matched chat stays free, credits
@@ -72,18 +72,18 @@ function headers(origin: string | null): HeadersInit {
     'Referrer-Policy': 'strict-origin-when-cross-origin'
   };
 }
-function json(body: unknown, status = 200, origin: string | null = null): Response {
+export function json(body: unknown, status = 200, origin: string | null = null): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...headers(origin), 'Content-Type': 'application/json' } });
 }
-function err(message: string, status = 400, origin: string | null = null, code?: string): Response {
+export function err(message: string, status = 400, origin: string | null = null, code?: string): Response {
   return json({ error: message, ...(code ? { code } : {}) }, status, origin);
 }
-function cleanString(value: unknown, max = 500): string { return String(value ?? '').trim().slice(0, max); }
+export function cleanString(value: unknown, max = 500): string { return String(value ?? '').trim().slice(0, max); }
 // IDs that reach PostgREST filters (`.or(...)`) must be canonical UUIDs, never
 // free text: a filter string is a query language of its own, so anything else
 // could reshape the predicate. Values read from the database are already UUIDs.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const isUuid = (value: unknown): value is string => typeof value === 'string' && UUID_RE.test(value);
+export const isUuid = (value: unknown): value is string => typeof value === 'string' && UUID_RE.test(value);
 const ageOf = ageAt;
 
 // ---------------------------------------------------------------- profile detail
@@ -196,7 +196,7 @@ function reportRow(r: Row) {
     matchId: r.match_id || undefined, messageId: r.message_id || undefined,
     reviewNote: r.review_note || undefined, reviewedAt: r.reviewed_at || undefined, createdAt: r.created_at };
 }
-async function bodyJson(req: Request): Promise<Row> {
+export async function bodyJson(req: Request): Promise<Row> {
   const raw = await req.text();
   if (raw.length > MAX_JSON_BYTES) throw new Error('Request body is too large.');
   if (!raw) return {};
@@ -324,7 +324,9 @@ function signatureMatches(a: string, b: string): boolean {
 }
 
 async function hmac(algorithm: 'SHA-256' | 'SHA-512', keyBytes: Uint8Array, message: string): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: algorithm }, false, ['sign']);
+  // `Uint8Array<ArrayBufferLike>` narrows to `BufferSource` only after the
+  // SharedArrayBuffer branch is excluded; the value is always plain bytes here.
+  const key = await crypto.subtle.importKey('raw', keyBytes as unknown as BufferSource, { name: 'HMAC', hash: algorithm }, false, ['sign']);
   return new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message)));
 }
 
@@ -1097,134 +1099,6 @@ Deno.serve(async (req) => {
   try {
     let body: Row | undefined;
     const getBody = async () => body ??= await bodyJson(req);
-    // ---- In-app notifications (poll-based, no push in this release) ----
-    if (path === '/notifications' && req.method === 'GET') {
-      const filters = reqUrl(req);
-      const since = filters.searchParams.get('since') || undefined;
-      const until = filters.searchParams.get('until') || undefined;
-      const kind = filters.searchParams.get('kind') || undefined;
-      const unreadOnly = filters.searchParams.get('unreadOnly') === '1';
-      const limit = Math.min(50, Math.max(1, Number(filters.searchParams.get('limit')) || 20));
-      const offsetNum = Math.max(0, Number(filters.searchParams.get('offset')) || 0);
-      if (since && Number.isNaN(Date.parse(since))) return err('Invalid "since" timestamp.', 400, origin);
-      if (until && Number.isNaN(Date.parse(until))) return err('Invalid "until" timestamp.', 400, origin);
-      if (kind && !['match','message','like'].includes(kind)) return err('kind must be match, message or like.', 400, origin);
-      // Notification contract (KB §notifications): match = mutual match created;
-      // message = any new DM in a thread you participate in; like = someone liked
-      // your profile. Every notification carries the actor and, for chat, the
-      // thread id + a short preview. privateIntroductionOptIn suppresses the name
-      // and photo of people outside your matches.
-      const uid = profile.id as string;
-      const { data: summaries, error: sumErr } = await db.rpc('wassaa_notification_summaries', {
-        p_user: uid, p_since: since || null, p_until: until || null, p_kind: kind || null, p_limit: limit + 1, p_offset: offsetNum
-      });
-      if (sumErr) return err('Could not load notifications.', 500, origin);
-      const rows = (summaries || []) as any[];
-      const hasMore = rows.length > limit;
-      const page = hasMore ? rows.slice(0, limit) : rows;
-      const unreadCount = page.filter((n: any) => !n.read_at).length;
-      const notifications = page.map((n: any) => ({
-        id: n.id, kind: n.kind, actorId: n.actor_id, threadId: n.thread_id || undefined,
-        messagePreview: n.message_preview || undefined,
-        createdAt: n.created_at,
-        readAt: n.read_at || undefined,
-        acknowledgementRequired: Boolean(n.acknowledgement_required)
-      }));
-      return json({ notifications, unreadCount, hasMore, limit, offset: offsetNum }, 200, origin);
-    }
-    if (path === '/notifications' && req.method === 'POST') {
-      const body = await getBody();
-      const ids = Array.isArray(body.ids) ? body.ids.filter(isUuid) : [];
-      if (!ids.length) return err('ids must be a non-empty array of notification ids.', 400, origin);
-      const { error } = await db.from('notification_reads').upsert(
-        { user_id: uid, notification_id: null, read_at: new Date().toISOString() },
-        { onConflict: 'user_id,notification_id' }
-      ).eq('user_id', uid);
-      const { error: markError } = await db.from('notification_reads').upsert(
-        { user_id: uid, notification_id: null, read_at: new Date().toISOString() },
-        { onConflict: 'user_id,notification_id' }
-      );
-      const { data: rows, error: filterError } = await db.from('notification_reads').upsert(
-        ids.map((id) => ({ user_id: uid, notification_id: id, read_at: new Date().toISOString() })),
-        { onConflict: 'user_id,notification_id' }
-      );
-      if (filterError) return err('Could not mark notifications read.', 500, origin);
-      return json({ success: true, read: ids.length }, 200, origin);
-    }
-    if (path === '/notifications/mark-read' && req.method === 'POST') {
-      const body = await getBody();
-      if (body.all !== true && body.all !== false && (!body.threadId || !isUuid(body.threadId))) {
-        return err('Pass { all: true } or { threadId: "<uuid>" }.', 400, origin);
-      }
-      if (body.all === true) {
-        const { error } = await db.from('notification_reads').upsert(
-          { user_id: uid, notification_id: null, read_at: new Date().toISOString() },
-          { onConflict: 'user_id,notification_id' }
-        ).eq('user_id', uid);
-      } else {
-        const rid = body.threadId as string;
-        const match = await db.from('matches').select('id').or(`user_a.eq.${uid},user_b.eq.${uid}`).eq('id', rid).maybeSingle();
-        if (!match) return err('Thread not found.', 404, origin);
-        const { error } = await db.from('notification_reads').upsert(
-          { user_id: uid, notification_id: null, read_at: new Date().toISOString() },
-          { onConflict: 'user_id,notification_id' }
-        );
-      }
-      return json({ success: true }, 200, origin);
-    }
-    if (path === '/notifications/preferences' && req.method === 'PATCH') {
-      const b = await getBody();
-      const old = (profile.notifications || {}) as Record<string, any>;
-      const turnOn = (key: string) => ({ ...(old || {}), [key]: true } as any);
-      const turnOff = (key: string) => ({ ...(old || {}), [key]: false } as any);
-      const out = b.markAsRead !== undefined ? turnOn('markAsRead') : old;
-      const patch: Record<string, any> = {};
-      if (b.message !== undefined) patch.message = typeof b.message === 'boolean' ? b.message : (old.message ?? true);
-      if (b.match !== undefined) patch.match = typeof b.match === 'boolean' ? b.match : (old.match ?? true);
-      if (b.like !== undefined) patch.like = typeof b.like === 'boolean' ? b.like : (old.like ?? true);
-      if (b.acknowledgementRequired !== undefined) patch.acknowledgementRequired = typeof b.acknowledgementRequired === 'boolean' ? b.acknowledgementRequired : (old.acknowledgementRequired ?? true);
-      if (!Object.keys(patch).length) return json({ success: true, preferences: out }, 200, origin);
-      patch.updated_at = new Date().toISOString();
-      const { data, error } = await db.from('profiles').update({ notifications: patch, updated_at: new Date().toISOString() }).eq('id', uid).select('notifications').single();
-      if (error) return err('Could not update notification preferences.', 500, origin);
-      return json({ success: true, preferences: data?.notifications || out }, 200, origin);
-    }
-    if (path === '/notifications/mute-thread' && req.method === 'POST') {
-      const b = await getBody(), threadId = String(b.threadId || '');
-      if (!isUuid(threadId)) return err('threadId is required.', 400, origin);
-      const { data: match } = await db.from('matches').select('id').eq('id', threadId).or(`user_a.eq.${uid},user_b.eq.${uid}`).maybeSingle();
-      if (!match) return err('Thread not found.', 404, origin);
-      const { error } = await db.from('notification_mutes').upsert(
-        { user_id: uid, thread_id: threadId, muted_at: new Date().toISOString() },
-        { onConflict: 'user_id,thread_id' }
-      );
-      if (error) return err('Could not mute this thread.', 500, origin);
-      return json({ success: true, muting: true }, 200, origin);
-    }
-    if (path === '/notifications/unmute-thread' && req.method === 'DELETE') {
-      const threadId = (reqUrl(req).pathname.match(/^\/notifications\/unmute-thread\/([0-9a-f-]+)$/i) || [])[1];
-      if (!threadId || !isUuid(threadId)) return err('threadId is required.', 400, origin);
-      const { data: match } = await db.from('matches').select('id').eq('id', threadId).or(`user_a.eq.${uid},user_b.eq.${uid}`).maybeSingle();
-      if (!match) return err('Thread not found.', 404, origin);
-      const { error } = await db.from('notification_mutes').delete().eq('user_id', uid).eq('thread_id', threadId);
-      return json({ success: true, muting: false }, 200, origin);
-    }
-    if (path === '/notifications/muted-threads' && req.method === 'GET') {
-      const { data: mutes } = await db.from('notification_mutes').select('thread_id,muted_at').eq('user_id', uid).order('muted_at', { ascending: false });
-      const ids = (mutes || []).map((m: any) => m.thread_id);
-      const { data: threads } = ids.length ? await db.from('matches').select('id').in('id', ids) : { data: [] as any[] };
-      const threadIds = new Set((threads || []).map((t: any) => t.id));
-      const byName = new Map<string, string>();
-      const partnerIds = [...new Set([(match?.user_a || uid), (match?.user_b || uid)])];
-      // load partner names for muted threads
-      if (ids.length) {
-        const { data: profiles } = await db.from('profiles').select('id,name,photos').in('id', ids).or(`user_a.eq.${uid},user_b.eq.${uid}`);
-        for (const p of (profiles || [])) byName.set(p.id, String(p.name || 'Member'));
-      }
-      return json({ muted: (mutes || []).map((m: any) => ({
-        threadId: m.thread_id, mutedAt: m.muted_at, partnerName: byName.get(m.thread_id) || 'Member'
-      }))}, 200, origin);
-    }
 
     // Session and own-profile operations
     if (path === '/auth/session' && req.method === 'GET') {
@@ -1793,7 +1667,7 @@ Deno.serve(async (req) => {
     // ---- notifications (in-app feed, mark-read, mute, preferences) ----
     // ---- Admin notifications (single source of truth: supabase/functions/api/notifications.ts) ----
     {
-      const r = await adminNotificationsRoute(db, user, profile, uid, path, req, origin, actor);
+      const r = await adminNotificationsRoute(db, user, profile, uid, path, req, origin, uid);
       if (r) return r;
     }
 

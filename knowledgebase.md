@@ -1055,3 +1055,17 @@ S3 endpoint, Google and PostHog are the only permitted `connect-src` origins.
   routes or the `cold` flag yet. Databases changes are live; deploy needs the
   project owner's `SUPABASE_ACCESS_TOKEN` (`npx supabase functions deploy api
   --project-ref avlbsficfejvwokxkgyl`) or the console.
+- The first deploy attempt failed in the bundler:
+  `notifications.ts` imported `Row` and re-exported `err/json/cleanString/
+  isUuid/bodyJson` from `./index.js` — a file that never existed (Deno resolves
+  the exact specifier, and index.ts exported none of them). The router also
+  carried a second, inline copy of every notification route, which shadowed
+  the module and referenced an out-of-scope `match`. Fixed by exporting the
+  helpers from `index.ts`, importing them from `./index.ts`, deleting the 128
+  inline duplicate lines, passing the admin id (`uid`) to
+  `adminNotificationsRoute`, and fixing the read-state writes (the
+  `notification_reads` primary key is `(user_id, notification_id)`, so a
+  "mark all" row with a null id can never exist — the API now expands it to
+  one row per event). `scripts/check-edge.mjs` now also runs
+  `tsc -p scripts/tsconfig.edge.json`, so a missing export fails the check
+  instead of the deploy.

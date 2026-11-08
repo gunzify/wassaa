@@ -3,6 +3,10 @@
 // directly, so we run TypeScript's transpile pass and report its diagnostics).
 import ts from 'typescript';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 const files = [
   'supabase/functions/api/index.ts',
@@ -33,4 +37,17 @@ for (const file of files) {
     console.log(`ok    ${file}`);
   }
 }
+// Per-file transpilation cannot see across modules: a route file that imports
+// a helper the router never exported still transpiles cleanly and only fails
+// later, in the deploy bundler. Type-check the graph as a whole so missing
+// exports and unresolved relative imports fail here instead of at deploy time.
+if (!failed) {
+  const tsc = spawnSync(process.execPath, [require.resolve('typescript/bin/tsc'), '-p', 'scripts/tsconfig.edge.json'], {
+    stdio: 'inherit',
+    cwd: process.cwd(),
+  });
+  if (tsc.status !== 0) failed = true;
+  else console.log('ok    module graph (tsc -p scripts/tsconfig.edge.json)');
+}
+
 process.exit(failed ? 1 : 0);
