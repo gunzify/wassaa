@@ -168,7 +168,7 @@
       if (name === 'audit') loadAudit();
       if (name === 'appeals') loadAppeals();
       if (name === 'threads') loadThreads();
-      if (name === 'npcs') loadNpcs();
+      if (name === 'npcs') loadNpcs(true);
     });
   });
 
@@ -504,38 +504,54 @@
   }
 
   // ---------- render: npcs ----------
+  function npcCard(n) {
+    var photo = (n.photos || [])[0];
+    var persona = n.persona || {};
+    var flags = [n.countryCode || 'NG', n.classOfService || n.professionCategory, persona.branch ? persona.branch + ' branch' : '', persona.race || ''].filter(Boolean);
+    // `awaiting_upload` means the auto-dealer had no spare face for this
+    // persona; it stays out of discovery until a photo is uploaded.
+    var needsPhoto = persona.photoState === 'awaiting_upload';
+    var quarantined = n.photoReview === 'quarantine';
+    return (
+      '<article class="npc" data-npc="' + esc(n.id) + '">' +
+        '<div class="cover">' + (photo
+          ? '<img src="' + esc(photo) + '" alt="" data-zoom="' + esc(photo) + '" />'
+          : '<div class="none">No photo</div>') + '</div>' +
+        '<div class="body">' +
+          '<strong>' + esc(n.name) + (n.active ? '' : ' <span class="badge">paused</span>') + (needsPhoto ? ' <span class="badge">needs photo</span>' : '') + (quarantined ? ' <span class="badge">quarantined</span>' : '') + (n.aiEnabled ? ' <span class="badge">AI</span>' : '') + '</strong>' +
+          '<span class="meta">' + esc(n.age || '—') + ' · ' + esc([n.city, n.state].filter(Boolean).join(', ')) + '</span>' +
+          '<span class="flagline">' + flags.map(function (f) { return '<span class="badge">' + esc(f) + '</span>'; }).join('') + '</span>' +
+          '<span>' + esc([n.service, n.orgRole, n.skill].filter(Boolean).join(' · ') || n.professionCategory || '') + '</span>' +
+          '<span>' + esc(n.verificationStatus || '') + ' · greeter: ' + esc(persona.greeter ? 'yes' : 'no') + '</span>' +
+          (quarantined ? '<span class="meta">Quarantined: ' + esc(n.quarantineReason || 'photo reads as generated') + '</span>' : '') +
+          '<div class="actions">' +
+            '<button class="btn" data-action="npc-edit" type="button">Edit</button>' +
+            '<button class="btn" data-action="npc-scripts" type="button">Scripts</button>' +
+            '<button class="btn" data-action="npc-photos" type="button">Photos</button>' +
+            '<button class="btn ' + (n.active ? 'reject' : 'approve') + '" data-action="npc-toggle" type="button">' + (n.active ? 'Pause' : 'Activate') + '</button>' +
+            '<button class="btn" data-action="npc-quarantine" type="button">' + (quarantined ? 'Release photo' : 'Quarantine photo') + '</button>' +
+          '</div>' +
+        '</div>' +
+      '</article>'
+    );
+  }
+
   function renderNpcs(box) {
     if (!state.npcs.length) {
       box.innerHTML = '<div class="empty">No personas match.</div>';
       return;
     }
-    box.innerHTML = state.npcs.map(function (n) {
-      var photo = (n.photos || [])[0];
-      var persona = n.persona || {};
-      var flags = [n.countryCode || 'NG', n.classOfService || n.professionCategory, persona.branch ? persona.branch + ' branch' : '', persona.race || ''].filter(Boolean);
-      // `awaiting_upload` means the auto-dealer had no spare face for this
-      // persona; it stays out of discovery until a photo is uploaded.
-      var needsPhoto = persona.photoState === 'awaiting_upload';
-      return (
-        '<article class="npc" data-npc="' + esc(n.id) + '">' +
-          '<div class="cover">' + (photo
-            ? '<img src="' + esc(photo) + '" alt="" data-zoom="' + esc(photo) + '" />'
-            : '<div class="none">No photo</div>') + '</div>' +
-          '<div class="body">' +
-            '<strong>' + esc(n.name) + (n.active ? '' : ' <span class="badge">paused</span>') + (needsPhoto ? ' <span class="badge">needs photo</span>' : '') + '</strong>' +
-            '<span class="meta">' + esc(n.age || '—') + ' · ' + esc([n.city, n.state].filter(Boolean).join(', ')) + '</span>' +
-            '<span class="flagline">' + flags.map(function (f) { return '<span class="badge">' + esc(f) + '</span>'; }).join('') + '</span>' +
-            '<span>' + esc([n.service, n.orgRole, n.skill].filter(Boolean).join(' · ') || n.professionCategory || '') + '</span>' +
-            '<span>' + esc(n.verificationStatus || '') + ' · greeter: ' + esc(persona.greeter ? 'yes' : 'no') + '</span>' +
-            '<div class="actions">' +
-              '<button class="btn" data-action="npc-edit" type="button">Edit</button>' +
-              '<button class="btn" data-action="npc-photos" type="button">Photos</button>' +
-              '<button class="btn ' + (n.active ? 'reject' : 'approve') + '" data-action="npc-toggle" type="button">' + (n.active ? 'Pause' : 'Activate') + '</button>' +
-            '</div>' +
-          '</div>' +
-        '</article>'
-      );
-    }).join('');
+    box.innerHTML = state.npcs.map(npcCard).join('');
+  }
+
+  /** Repaint one card without touching the rest of the list (keeps scroll). */
+  function replaceNpcCard(id) {
+    var record = state.npcs.find(function (x) { return x.id === id; });
+    var old = document.querySelector('[data-npc="' + id + '"]');
+    if (!record || !old) return;
+    var holder = document.createElement('div');
+    holder.innerHTML = npcCard(record);
+    old.replaceWith(holder.firstElementChild);
   }
 
   // ---------- render: audit ----------
@@ -804,6 +820,10 @@
       '<div class="decision" style="padding:8px 18px;gap:12px">' +
         '<label style="font-size:12px"><input type="checkbox" id="npc-greeter" ' + (n.persona && n.persona.greeter ? 'checked' : '' ) + ' /> Greeter (proactively messages new matches)</label>' +
         '<label style="font-size:12px"><input type="checkbox" id="npc-active" ' + (n.active ? 'checked' : '') + ' /> Active in discovery</label>' +
+        '<label style="font-size:12px"><input type="checkbox" id="npc-ai" ' + (n.aiEnabled ? 'checked' : '') + ' /> AI replies (falls back to the messages above if the AI is unavailable)</label>' +
+        (n.photoReview === 'quarantine'
+          ? '<span class="muted" style="font-size:12px">Photo quarantined: ' + esc(n.quarantineReason || 'reads as generated') + ' — replace the photos and release it.</span>'
+          : '') +
       '</div>' +
       '<div class="decision" style="padding:12px 18px"><button class="btn primary" id="npc-save" type="button" style="margin-top:0">Save persona</button></div>');
 
@@ -900,7 +920,8 @@
             familyPlans: value('familyPlans')
           },
           persona: persona,
-          active: sheet.querySelector('#npc-active').checked
+          active: sheet.querySelector('#npc-active').checked,
+          aiEnabled: sheet.querySelector('#npc-ai').checked
         }
       }).then(function () {
         if (!photosChanged) return null;
@@ -908,10 +929,110 @@
       }).then(function () {
         toast('Persona updated');
         closeSheet();
-        loadNpcs();
+        loadNpcs(true);
         if (state.tab === 'audit') loadAudit();
       }).catch(function (err) { toast(err.message, true); });
     });
+  }
+
+  // ---------- persona scripts (every line an NPC can send) ----------
+  var SCRIPT_INTENTS = [
+    ['smalltalk', 'Small talk'],
+    ['questions', 'Answering questions'],
+    ['compliment', 'Compliments'],
+    ['logistics', 'Making plans'],
+    ['farewell', 'Goodbyes'],
+    ['offTopic', 'Off-topic']
+  ];
+  var SCRIPT_INTENT_LABEL = {};
+  SCRIPT_INTENTS.forEach(function (pair) { SCRIPT_INTENT_LABEL[pair[0]] = pair[1]; });
+
+  function editNpcScripts(npcId) {
+    var npc = state.npcs.find(function (x) { return x.id === npcId; });
+    var sheet = openSheet('Messages — ' + (npc ? npc.name : 'persona'),
+      '<div id="npc-scripts-body" style="padding:14px 18px"><span class="muted">Loading messages…</span></div>');
+
+    function reload() {
+      api('/npcs/' + encodeURIComponent(npcId) + '/scripts').then(function (json) {
+        var body = sheet.querySelector('#npc-scripts-body');
+        if (!body) return;
+        var scripts = json.scripts || [];
+        var order = ['greeting'].concat(SCRIPT_INTENTS.map(function (p) { return p[0]; }));
+        var groups = {};
+        scripts.forEach(function (s) {
+          var key = s.kind === 'greeting' ? 'greeting' : (s.intent || 'offTopic');
+          (groups[key] = groups[key] || []).push(s);
+        });
+
+        var html = '<p class="muted" style="margin:0 0 10px">These are every line this persona can send. ' +
+          'The engine picks one per conversation, so add several per group to keep it varied. ' +
+          'Use <code>{you}</code> for the member\'s first name.</p>' +
+          '<p class="muted" style="margin:0 0 12px">' + scripts.length + ' message' + (scripts.length === 1 ? '' : 's') + ' on file.</p>';
+
+        order.forEach(function (key) {
+          var list = groups[key] || [];
+          var label = key === 'greeting' ? 'Opening message' : (SCRIPT_INTENT_LABEL[key] || key);
+          html += '<h4 style="margin:16px 0 6px">' + esc(label) + ' <span class="muted">(' + list.length + ')</span></h4>';
+          if (!list.length) {
+            html += '<p class="muted" style="margin:0 0 8px">None yet — the shared fallback pool is used.</p>';
+          }
+          list.forEach(function (s) {
+            html += '<div class="script-row" data-script="' + esc(s.id) + '" style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">' +
+              '<textarea rows="2" style="flex:1;min-width:0" data-script-body>' + esc(s.body) + '</textarea>' +
+              '<button class="btn" data-script-save type="button" style="margin-top:0">Save</button>' +
+              '<button class="btn reject" data-script-delete type="button" style="margin-top:0">Delete</button>' +
+            '</div>';
+          });
+        });
+
+        html += '<h4 style="margin:20px 0 6px">Add a message</h4>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">' +
+            '<select id="script-kind" style="min-width:150px">' +
+              '<option value="greeting">Opening message</option>' +
+              SCRIPT_INTENTS.map(function (p) { return '<option value="' + esc(p[0]) + '">Reply: ' + esc(p[1]) + '</option>'; }).join('') +
+            '</select>' +
+            '<textarea id="script-new" rows="2" style="flex:1;min-width:180px" placeholder="New message…"></textarea>' +
+            '<button class="btn primary" id="script-add" type="button" style="margin-top:0">Add</button>' +
+          '</div>';
+
+        body.innerHTML = html;
+
+        body.querySelectorAll('[data-script]').forEach(function (row) {
+          var id = row.dataset.script;
+          var textarea = row.querySelector('[data-script-body]');
+          row.querySelector('[data-script-save]').addEventListener('click', function () {
+            var value = (textarea.value || '').trim();
+            if (!value) { toast('Message cannot be empty', true); return; }
+            api('/npcs/' + encodeURIComponent(npcId) + '/scripts/' + encodeURIComponent(id), {
+              method: 'PATCH', body: { body: value }
+            }).then(function () { toast('Message saved'); })
+              .catch(function (err) { toast(err.message, true); });
+          });
+          row.querySelector('[data-script-delete]').addEventListener('click', function () {
+            if (!window.confirm('Delete this message?')) return;
+            api('/npcs/' + encodeURIComponent(npcId) + '/scripts/' + encodeURIComponent(id), { method: 'DELETE' })
+              .then(function () { toast('Message deleted'); reload(); })
+              .catch(function (err) { toast(err.message, true); });
+          });
+        });
+
+        body.querySelector('#script-add').addEventListener('click', function () {
+          var kind = body.querySelector('#script-kind').value;
+          var value = (body.querySelector('#script-new').value || '').trim();
+          if (!value) { toast('Write the message first', true); return; }
+          var payload = { kind: kind === 'greeting' ? 'greeting' : 'reply', body: value };
+          if (kind !== 'greeting') payload.intent = kind;
+          api('/npcs/' + encodeURIComponent(npcId) + '/scripts', { method: 'POST', body: payload })
+            .then(function () { toast('Message added'); reload(); })
+            .catch(function (err) { toast(err.message, true); });
+        });
+      }).catch(function (err) {
+        var body = sheet.querySelector('#npc-scripts-body');
+        if (body) body.innerHTML = '<span class="muted">' + esc(err.message) + '</span>';
+      });
+    }
+
+    reload();
   }
 
   function editNpcPhotos(npcId) {
@@ -957,7 +1078,7 @@
     });
     sheet.querySelector('#npc-photos-save').addEventListener('click', function () {
       api('/npcs/' + encodeURIComponent(npcId) + '/photos', { method: 'POST', body: { photos: photos } })
-        .then(function () { toast('Photos saved'); closeSheet(); loadNpcs(); if (state.tab === 'audit') loadAudit(); })
+        .then(function () { toast('Photos saved'); closeSheet(); loadNpcs(true); if (state.tab === 'audit') loadAudit(); })
         .catch(function (err) { toast(err.message, true); });
     });
   }
@@ -1045,12 +1166,43 @@
     var npc = button.closest('[data-npc]');
     if (npc) {
       if (button.dataset.action === 'npc-edit') { editNpc(npc.dataset.npc); return; }
+      if (button.dataset.action === 'npc-scripts') { editNpcScripts(npc.dataset.npc); return; }
       if (button.dataset.action === 'npc-photos') { editNpcPhotos(npc.dataset.npc); return; }
       if (button.dataset.action === 'npc-toggle') {
         var record = state.npcs.find(function (x) { return x.id === npc.dataset.npc; });
-        api('/npcs/' + encodeURIComponent(npc.dataset.npc), { method: 'PATCH', body: { active: !(record && record.active) } })
-          .then(function () { toast(record && record.active ? 'Persona paused' : 'Persona activated'); loadNpcs(); })
-          .catch(function (err) { toast(err.message, true); });
+        var next = !(record && record.active);
+        button.disabled = true;
+        // Patch the record and repaint only this card. Reloading the whole list
+        // threw the page back to the top, so staff lost the persona they had
+        // just paused halfway down a long list.
+        api('/npcs/' + encodeURIComponent(npc.dataset.npc), { method: 'PATCH', body: { active: next } })
+          .then(function () {
+            if (record) record.active = next;
+            replaceNpcCard(npc.dataset.npc);
+            toast(next ? 'Persona activated' : 'Persona paused');
+          })
+          .catch(function (err) { button.disabled = false; toast(err.message, true); });
+        return;
+      }
+      if (button.dataset.action === 'npc-quarantine') {
+        var row = state.npcs.find(function (x) { return x.id === npc.dataset.npc; });
+        var quarantine = !(row && row.photoReview === 'quarantine');
+        var reason = quarantine
+          ? window.prompt('Why is this photo being quarantined? The persona is paused immediately.', row && row.quarantineReason ? row.quarantineReason : 'Photo reads as generated')
+          : '';
+        if (quarantine && !reason) return;
+        button.disabled = true;
+        api('/npcs/' + encodeURIComponent(npc.dataset.npc) + '/quarantine', {
+          method: 'POST', body: { quarantine: quarantine, reason: reason || undefined }
+        }).then(function () {
+          if (row) {
+            row.photoReview = quarantine ? 'quarantine' : 'ok';
+            row.quarantineReason = quarantine ? reason : undefined;
+            if (quarantine) row.active = false;
+          }
+          replaceNpcCard(npc.dataset.npc);
+          toast(quarantine ? 'Quarantined and paused' : 'Photo review cleared');
+        }).catch(function (err) { button.disabled = false; toast(err.message, true); });
         return;
       }
     }

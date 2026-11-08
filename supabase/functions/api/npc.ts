@@ -14,7 +14,8 @@
  *   admin_owned → staff answers personally (after a credit purchase)
  */
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { buildContext, classifyIntent, pickGreeting, pickReply, type PersonaContext } from './npc-content.ts';
+import { buildContext, classifyIntent, pickGreeting, pickReply, pickScript, emptyScripts, addScript, type PersonaContext, type ScriptSet } from './npc-content.ts';
+import { aiConfigured, aiReply } from './ai.ts';
 
 type Db = ReturnType<typeof createClient>;
 type Row = Record<string, any>;
@@ -32,11 +33,33 @@ function hashDelay(id: string, minSec: number, maxSec: number): number {
 
 async function loadSides(db: Db, match: Row): Promise<{ npc: Row | null; member: Row | null }> {
   const { data } = await db.from('profiles')
-    .select('id,name,city,skill,profession_title,interests,is_npc,npc_active,npc,deleted_at')
+    .select('id,name,city,skill,profession_title,interests,is_npc,npc_active,npc_ai_enabled,npc_photo_review,npc,deleted_at')
     .in('id', [match.user_a, match.user_b]);
-  const npc = (data || []).find((p: Row) => p.is_npc && p.npc_active && !p.deleted_at) || null;
-  const member = (data || []).find((p: Row) => p.id !== (npc?.id)) || null;
+  const usable = (p: Row) => p.is_npc && p.npc_active && p.npc_photo_review !== 'quarantine' && !p.deleted_at;
+  const npc = (data || []).find(usable) || null;
+  const member = (data || []).find((p: Row) => !npc || p.id !== npc.id) || null;
   return { npc, member };
+}
+
+/**
+ * One persona's lines. Loaded in a batch so a match-list tick does not issue a
+ * query per thread. Personas without rows fall back to the shared pools.
+ */
+async function loadScripts(db: Db, npcIds: string[]): Promise<Map<string, ScriptSet>> {
+  const map = new Map<string, ScriptSet>();
+  const ids = [...new Set(npcIds.filter(Boolean))];
+  if (!ids.length) return map;
+  const { data } = await db.from('npc_scripts')
+    .select('npc_id,kind,intent,body,position')
+    .in('npc_id', ids)
+    .eq('enabled', true)
+    .order('position', { ascending: true });
+  for (const row of (data || []) as Row[]) {
+    const set = map.get(row.npc_id) || emptyScripts();
+    addScript(set, row.kind, row.intent, row.body);
+    map.set(row.npc_id, set);
+  }
+  return map;
 }
 
 function contextFor(member: Row | null, npc: Row): PersonaContext {
@@ -46,7 +69,7 @@ function contextFor(member: Row | null, npc: Row): PersonaContext {
   });
 }
 
-async function runEngine(db: Db, match: Row, npc: Row, member: Row | null): Promise<void> {
+async function runEngine(db: Db, match: Row, npc: Row, member: Row | null, scripts?: ScriptSet): Promise<void> {
   const state = match.auto_state || 'none';
   if (state !== 'none' && state !== 'active') return;
   const persona: Row = npc.npc || {};
@@ -61,7 +84,10 @@ async function runEngine(db: Db, match: Row, npc: Row, member: Row | null): Prom
       .update({ auto_state: 'active' })
       .eq('id', match.id).eq('auto_state', 'none').select('id').maybeSingle();
     if (!claimed) return;
-    await db.rpc('wassaa_npc_reply', { p_match: match.id, p_text: pickGreeting(contextFor(member, npc)) });
+    const ctx = contextFor(member, npc);
+    // The persona's own opener first: no two personas share a line.
+    const opener = pickScript(scripts, 'greeting', null, ctx) || pickGreeting(ctx);
+    await db.rpc('wassaa_npc_reply', { p_match: match.id, p_text: opener });
     return;
   }
 
@@ -93,7 +119,18 @@ async function runEngine(db: Db, match: Row, npc: Row, member: Row | null): Prom
 
   const body = String(lastHuman.text || lastHuman.caption || '').trim();
   const intent = lastHuman.kind === 'photo' && !body ? 'smalltalk' : classifyIntent(body);
-  await db.rpc('wassaa_npc_reply', { p_match: match.id, p_text: pickReply(intent, contextFor(member, npc)) });
+  const ctx = contextFor(member, npc);
+  let reply = pickScript(scripts, 'reply', intent, ctx) || pickReply(intent, ctx);
+
+  // Optional AI pass: only when staff enabled it for this persona and a key is
+  // configured. The thread (oldest first) plus both profiles go in, so the
+  // answer is written for this conversation rather than drawn from a pool.
+  if (npc.npc_ai_enabled && aiConfigured()) {
+    const aiText = await aiReply({ npc, member, history: rows, intent });
+    if (aiText) reply = aiText;
+  }
+
+  await db.rpc('wassaa_npc_reply', { p_match: match.id, p_text: reply });
 }
 
 /** Tick one conversation. Returns the partner's fresh thread state when the partner is an NPC, else null. */
@@ -103,7 +140,8 @@ export async function tickMatch(db: Db, matchId: string): Promise<string | null>
   const { npc, member } = await loadSides(db, match);
   if (!npc) return null;
   try {
-    await runEngine(db, match, npc, member);
+    const scripts = await loadScripts(db, [npc.id]);
+    await runEngine(db, match, npc, member, scripts.get(npc.id));
   } catch (e) {
     console.error('[wassaa-npc] thread tick failed', { matchId, message: e instanceof Error ? e.message : 'unknown' });
   }
@@ -125,18 +163,18 @@ export async function tickUserThreads(db: Db, userId: string): Promise<void> {
     const sides = new Map<string, Row>();
     for (let i = 0; i < sideIds.length; i += 100) {
       const { data } = await db.from('profiles')
-        .select('id,name,city,skill,profession_title,interests,is_npc,npc_active,npc,deleted_at')
+        .select('id,name,city,skill,profession_title,interests,is_npc,npc_active,npc_ai_enabled,npc_photo_review,npc,deleted_at')
         .in('id', sideIds.slice(i, i + 100));
       for (const p of data || []) sides.set(p.id, p);
     }
+    const usable = (p?: Row) => Boolean(p && p.is_npc && p.npc_active && p.npc_photo_review !== 'quarantine' && !p.deleted_at);
+    const npcIds = candidates.flatMap((m: Row) => [m.user_a, m.user_b]).filter((id: string) => usable(sides.get(id)));
+    const scripts = await loadScripts(db, npcIds);
     for (const match of candidates) {
-      const npc = sides.get(match.user_a)?.is_npc && sides.get(match.user_a)?.npc_active && !sides.get(match.user_a)?.deleted_at
-        ? sides.get(match.user_a)
-        : sides.get(match.user_b)?.is_npc && sides.get(match.user_b)?.npc_active && !sides.get(match.user_b)?.deleted_at
-          ? sides.get(match.user_b) : null;
+      const npc = usable(sides.get(match.user_a)) ? sides.get(match.user_a) : usable(sides.get(match.user_b)) ? sides.get(match.user_b) : null;
       if (!npc) continue;
       const member = sides.get(match.user_a === npc.id ? match.user_b : match.user_a) || null;
-      await runEngine(db, match, npc, member);
+      await runEngine(db, match, npc, member, scripts.get(npc.id));
     }
   } catch (e) {
     console.error('[wassaa-npc] user thread tick failed', { userId, message: e instanceof Error ? e.message : 'unknown' });

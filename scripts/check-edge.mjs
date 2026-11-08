@@ -8,7 +8,9 @@ const files = [
   'supabase/functions/api/index.ts',
   'supabase/functions/api/npc.ts',
   'supabase/functions/api/npc-content.ts',
+  'supabase/functions/api/ai.ts',
   'supabase/functions/api/domain.ts',
+  'supabase/functions/api/notifications.ts',
 ];
 
 let failed = false;

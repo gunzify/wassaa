@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Bell } from 'lucide-react';
+import { NotificationsScreen } from './components/screens/NotificationsScreen';
+import { fetchNotifications, type UserNotificationSummary } from './services/notifications';
 import {
   Home,
   Heart,
@@ -54,6 +57,7 @@ type ScreenId =
   | 'chat'
   | 'matches_list'
   | 'messages'
+  | 'notifications'
   | 'settings_privacy'
   | 'settings'
   | 'subscription_plans'
@@ -78,6 +82,11 @@ export default function App() {
   const [likesReceived, setLikesReceived] = useState<UserProfile[]>([]);
   const [activeMatchId, setActiveMatchId] = useState<string>('');
   const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([]);
+  const [notifications, setNotifications] = useState<UserNotificationSummary[]>([]);
+  const [notificationsUnread, setNotificationsUnread] = useState(0);
+  const [notificationsLoading, setNotificationsLoading] = useState(true);
+  const [notificationsError, setNotificationsError] = useState<string | null>(null);
+  const fetchNotificationsTimer = useRef<ReturnType<typeof setTimeout>>();
   const [activeChatPartner, setActiveChatPartner] = useState<UserProfile | null>(null);
   // Which list the conversation was opened from, so Back lands where the
   // member came from (the Messages tab, the Matches list, or discovery).
@@ -90,7 +99,7 @@ export default function App() {
   const [likesLocked, setLikesLocked] = useState(true);
   const [likesCost, setLikesCost] = useState(15);
   // Live credit prices from /billing/entitlements (matched 5/10, cold 10/15/20).
-  const [pricing, setPricing] = useState<Pricing>({ text: 5, photo: 10, coldBase: 10, coldStep: 5, coldMax: 3, freeDailySwipes: 20, paidSwipe: 1, superLike: 3, revealLikes: 15 });
+  const [pricing, setPricing] = useState<Pricing>({ text: 5, photo: 10, coldBase: 10, coldStep: 5, coldMax: 3, freeDailySwipes: 20, paidSwipe: 1, revealLikes: 15 });
   const [identityOrigin, setIdentityOrigin] = useState<ScreenId>('profile_setup');
   const [lastInteractedProfile, setLastInteractedProfile] = useState<UserProfile | null>(null);
   const [blockedUsers, setBlockedUsers] = useState<{ id: string; name: string; reason?: string; date?: string }[]>([]);
@@ -325,29 +334,6 @@ export default function App() {
     advanceDeck();
   }, [advanceDeck, showToast, handleApiError]);
 
-  const handleSuperLike = useCallback(async (profile: UserProfile) => {
-    setLastInteractedProfile(profile);
-    try {
-      const res = await WassaaApi.like(profile.id, { superLike: true });
-      track('like_sent', { kind: 'super_like', is_match: res.isMatch });
-      if (res.isMatch) {
-        track('match_created', { source: 'discover' });
-        if (res.match) setPendingMatch({ id: res.match.id, partner: profile });
-        setCurrentScreen('match_screen');
-        WassaaApi.getMatches().then(setMatches).catch(() => undefined);
-      } else {
-        showToast(`Super Liked ${profile.name}! (3 credits)`);
-      }
-      if (typeof res.balance === 'number') setCredits(res.balance);
-      else void WassaaApi.getEntitlements().then((ens) => setCredits(ens.credits)).catch(() => undefined);
-    } catch (err) {
-      const e = err as Error & { code?: string };
-      if (e.code === 'SUPER_LIMIT') showToast('Your Super Like could not be sent. Try again shortly.');
-      else handleApiError(err, 'Super Like failed.');
-    }
-    advanceDeck();
-  }, [advanceDeck, showToast, handleApiError]);
-
   // ---------- Matches & chat polling ----------
   const refreshMatches = useCallback(async () => {
     try {
@@ -356,6 +342,21 @@ export default function App() {
       saveStartupSnapshot({ matches: ms });
     } catch { /* silent */ }
   }, []);
+
+  const loadNotifications = useCallback(async () => {
+    if (!currentUser) return;
+    setNotificationsLoading(true);
+    setNotificationsError(null);
+    try {
+      const res = await fetchNotifications({ limit: 50, offset: 0 });
+      setNotifications(res.notifications);
+      setNotificationsUnread(res.unreadCount);
+    } catch (e) {
+      setNotificationsError(e instanceof Error ? e.message : 'Could not load notifications');
+    } finally {
+      setNotificationsLoading(false);
+    }
+  }, [currentUser]);
 
   // Likes are a credit feature: the endpoint reports locked+price first, and
   // only charges when we explicitly ask for the reveal.
@@ -407,11 +408,36 @@ export default function App() {
   }, [refreshMatches, showToast]);
 
   useEffect(() => {
-    if (!['matches_list', 'messages', 'chat'].includes(currentScreen)) return;
+    if (!['matches_list', 'messages', 'chat', 'notifications'].includes(currentScreen)) return;
     void refreshMatches();
     const t = setInterval(refreshMatches, 30000);
-    return () => clearInterval(t);
+    return () => { clearInterval(t); };
   }, [currentScreen, refreshMatches]);
+
+  useEffect(() => {
+    if (currentScreen !== 'notifications' || !currentUser) return;
+    let cancelled = false;
+    setNotificationsLoading(true);
+    setNotificationsError(null);
+    (async () => {
+      try {
+        const res = await fetchNotifications({ limit: 50, offset: 0 });
+        if (cancelled) return;
+        setNotifications(res.notifications);
+        setNotificationsUnread(res.unreadCount);
+      } catch (e) {
+        if (cancelled) return;
+        setNotificationsError(e instanceof Error ? e.message : 'Could not load notifications');
+      } finally {
+        if (cancelled) return;
+        setNotificationsLoading(false);
+      }
+    })();
+    const refreshTimer = window.setTimeout(() => {
+      if (!cancelled) void loadNotifications();
+    }, 20000);
+    return () => { cancelled = true; clearTimeout(refreshTimer); };
+  }, [currentScreen, currentUser]);
 
   // Load messages and join the authorized match channel. Polling is a fallback
   // for realtime outages and a low-frequency recovery sync.
@@ -791,7 +817,7 @@ export default function App() {
 
   // Screens where the bottom navigation dock is visible. A conversation is
   // deliberately absent: opening a DM takes the whole screen.
-  const showTabs = ['discover', 'explore', 'matches_list', 'messages', 'settings_privacy', 'settings', 'subscription_plans'].includes(currentScreen) && currentUser;
+  const showTabs = ['discover', 'explore', 'matches_list', 'messages', 'notifications', 'settings_privacy', 'settings', 'subscription_plans'].includes(currentScreen) && currentUser;
 
   // Screens that are full-bleed (no padding/centering from shell)
   const isFullBleed = ['splash', 'match_screen', 'chat', 'profile_view'].includes(currentScreen);
@@ -928,7 +954,6 @@ export default function App() {
                   credits={credits}
                   onSwipeLeft={handleSwipeLeft}
                   onSwipeRight={handleSwipeRight}
-                  onSuperLike={handleSuperLike}
                   onOpenProfile={(profile) => openProfile(profile, 'discover')}
                   onOpenFilter={() => setCurrentScreen('settings')}
                   onOpenStore={openStore}
@@ -953,7 +978,6 @@ export default function App() {
                   onBack={() => setCurrentScreen(profileOrigin)}
                   onSwipeLeft={(profile) => { void handleSwipeLeft(profile); setCurrentScreen(profileOrigin); }}
                   onSwipeRight={(profile) => { void handleSwipeRight(profile); setCurrentScreen(profileOrigin); }}
-                  onSuperLike={(profile) => { void handleSuperLike(profile); setCurrentScreen(profileOrigin); }}
                   onStartChat={(profile) => { void handleStartDirectChat(profile, profileOrigin); }}
                 />
               )}
@@ -1061,6 +1085,19 @@ export default function App() {
                 />
               )}
 
+              {currentScreen === 'notifications' && (
+                <NotificationsScreen
+                  currentUser={currentUser}
+                  unreadCount={notificationsUnread}
+                  onUnreadCountChange={setNotificationsUnread}
+                  onSelectNotification={(n) => {
+                    if (n.threadId) { setChatOrigin('notifications'); void openMatch(n.threadId, undefined, 'notifications'); }
+                  }}
+                  onSelectThread={(threadId) => { setChatOrigin('notifications'); void openMatch(threadId, undefined, 'notifications'); }}
+                  onSelectActor={(actorId) => { void openProfile({ id: actorId, name: '', photos: [] } as UserProfile, 'notifications'); }}
+                  onBack={() => setCurrentScreen('discover')}
+                />
+              )}
               {currentScreen === 'subscription_plans' && (
                 <SubscriptionPlansScreen
                   credits={credits}
@@ -1095,15 +1132,16 @@ export default function App() {
               { id: 'discover' as ScreenId, icon: Home, label: 'Discover' },
               { id: 'explore' as ScreenId, icon: Compass, label: 'Explore' },
               { id: 'matches_list' as ScreenId, icon: Heart, label: 'Matches' },
-              { id: 'messages' as ScreenId, icon: MessageSquare, label: 'Messages' },
-              { id: 'settings_privacy' as ScreenId, icon: User, label: 'Profile' },
+              { id: 'messages' as ScreenId, icon: MessageSquare, label: 'Messages' },              {id: 'notifications' as ScreenId, icon: Bell, label: 'Notifications'},
+              {id: 'settings_privacy' as ScreenId, icon: User, label: 'Profile'},
             ] as const).map(({ id, icon: Icon, label }) => {
               const isActive = currentScreen === id ||
                 (id === 'discover' && currentScreen === 'profile_view' && profileOrigin === 'discover') ||
                 (id === 'explore' && currentScreen === 'profile_view' && profileOrigin === 'explore') ||
                 (id === 'messages' && currentScreen === 'chat') ||
                 (id === 'settings_privacy' &&
-                  ['settings', 'phone_verify'].includes(currentScreen));
+                  ['settings', 'phone_verify'].includes(currentScreen)) ||
+                (id === 'notifications' && ['notifications'].includes(currentScreen));
               return (
                 <button
                   key={id}

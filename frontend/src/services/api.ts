@@ -10,7 +10,6 @@ export interface Pricing {
   coldMax?: number;
   freeDailySwipes: number;
   paidSwipe: number;
-  superLike: number;
   revealLikes: number;
 }
 import { clearSession } from './supabase-auth';
@@ -240,8 +239,8 @@ export const WassaaApi = {
   },
 
   // ---- Swipes ----
-  async like(targetUserId: string, opts?: { superLike?: boolean; note?: string }): Promise<{ isMatch: boolean; match?: { id: string }; balance?: number }> {
-    const res = await post(`${BASE_URL}/likes`, { targetUserId, superLike: opts?.superLike, note: opts?.note });
+  async like(targetUserId: string, opts?: { note?: string }): Promise<{ isMatch: boolean; match?: { id: string }; balance?: number }> {
+    const res = await post(`${BASE_URL}/likes`, { targetUserId, note: opts?.note });
     const match = res.match as { id: string } | undefined;
     return { isMatch: !!res.isMatch, match, balance: typeof res.balance === 'number' ? res.balance : undefined };
   },
@@ -263,7 +262,7 @@ export const WassaaApi = {
   // ---- Matches & chat ----
   async getMatches(): Promise<MatchItem[]> {
     const res = await fetchJson<{
-      matches: { id: string; matchedAt: string; profile: ClientProfile; lastMessage: string; lastMessageTime: string; unread: number }[];
+      matches: { id: string; matchedAt: string; profile: ClientProfile; lastMessage: string; lastMessageTime: string; unread: number; cold?: boolean; mutual?: boolean }[];
     }>(`${BASE_URL}/matches`);
     return res.matches.map((m) => ({
       id: m.id,
@@ -272,6 +271,8 @@ export const WassaaApi = {
       lastMessage: m.lastMessage,
       lastMessageTime: m.lastMessageTime,
       unreadCount: m.unread,
+      cold: Boolean(m.cold),
+      mutual: m.mutual !== false,
       messages: []
     }));
   },
@@ -372,7 +373,7 @@ export const WassaaApi = {
     return { tier: String(res.tier), credits: Number(res.credits ?? 0) };
   },
   async getEntitlements(): Promise<{
-    tier: SubscriptionTier; dailyLikes: number; superLikesPerWeek: number; canSeeLikes: boolean;
+    tier: SubscriptionTier; dailyLikes: number; canSeeLikes: boolean;
     canRewind: boolean; incognito: boolean; privateIntroduction: boolean; boostsPerMonth: number; readReceipts: boolean;
     credits: number; revealLikesCost?: number; packs: CreditPack[];
     pricing?: Pricing;

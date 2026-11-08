@@ -3,7 +3,6 @@ import {
   ChevronLeft,
   X,
   Heart,
-  Star,
   Send,
   MapPin,
   Briefcase,
@@ -27,7 +26,6 @@ interface ProfileDetailScreenProps {
   onBack: () => void;
   onSwipeLeft: (profile: UserProfile) => void;
   onSwipeRight: (profile: UserProfile) => void;
-  onSuperLike: (profile: UserProfile) => void;
   /** Cold open: start a chat without matching first (credits apply per message). */
   onStartChat?: (profile: UserProfile) => void;
 }
@@ -41,7 +39,6 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
   onBack,
   onSwipeLeft,
   onSwipeRight,
-  onSuperLike,
   onStartChat
 }) => {
   const [photoIndex, setPhotoIndex] = useState(0);
@@ -343,15 +340,6 @@ export const ProfileDetailScreen: React.FC<ProfileDetailScreenProps> = ({
             title="Pass"
           >
             <X className="h-5 w-5 stroke-[2.4]" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onSuperLike(profile)}
-            className="flex h-11 w-11 items-center justify-center rounded-full border border-line bg-surface text-verified transition-colors hover:bg-verified-tint"
-            aria-label="Super like"
-            title="Super like"
-          >
-            <Star className="h-5 w-5" />
           </button>
           {onStartChat && (
             <button

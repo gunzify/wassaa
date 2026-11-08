@@ -3,6 +3,7 @@ import { DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, ListObject
 import { getSignedUrl } from 'npm:@aws-sdk/s3-request-presigner@3';
 import { ageAt, greatCircleDistanceKm, isOnboardingComplete } from './domain.ts';
 import { tickMatch, tickUserThreads } from './npc.ts';
+import { notificationsRoute, adminNotificationsRoute } from './notifications.ts';
 
 type Row = Record<string, any>;
 const allowedOrigins = (Deno.env.get('APP_ORIGINS') || 'https://wassaa.app,http://localhost:5173,http://localhost:5174,http://localhost:4173').split(',').map((s) => s.trim());
@@ -36,12 +37,13 @@ const PRICING = {
   coldMax: 3,
   freeDailySwipes: 20,
   paidSwipe: 1,
-  superLike: 3,
   revealLikes: 15,
   boost: 10
 } as const;
 const DEFAULT_PRIVACY = { serviceVisibility: 'matches', rankVisibility: 'private', verificationDisplay: 'badge', chatNotifications: true, twoFactorAuth: false, privateIntroductionOptIn: true };
 const MAX_JSON_BYTES = 1_500_000;
+/** Intent buckets a persona reply can target (npc-content.ts REPLIES keys). */
+const SCRIPT_INTENTS = ['greeting', 'smalltalk', 'questions', 'compliment', 'logistics', 'farewell', 'offTopic'];
 // Paystack charges international cards in the merchant's settlement currency
 // (NGN here) and the cardholder's bank converts, so a card from any of 195+
 // countries can buy a pack. Credit packs are therefore sold everywhere and
@@ -183,6 +185,10 @@ function messageRow(r: Row) {
   return { id: r.id, matchId: r.match_id, senderId: r.sender_id, kind: r.kind, text: r.text || undefined,
     mediaUrl: r.media_url || undefined, caption: r.caption || undefined,
     voice: secs == null ? undefined : { durationSeconds: secs, durationLabel: `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}` }, createdAt: r.created_at };
+}
+function scriptRow(r: Row) {
+  return { id: r.id, npcId: r.npc_id, kind: r.kind, intent: r.intent || undefined, body: r.body,
+    position: r.position ?? 0, enabled: Boolean(r.enabled), updatedAt: r.updated_at };
 }
 function reportRow(r: Row) {
   return { id: r.id, reporterId: r.reporter_id, reportedUserId: r.reported_user_id, category: r.category, categoryLabel: r.category_label,
@@ -424,6 +430,9 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
   const npcOneMatch = path.match(/^\/admin\/npcs\/([0-9a-f-]+)$/i);
   const npcPresignMatch = path.match(/^\/admin\/npcs\/([0-9a-f-]+)\/photo-presign$/i);
   const npcPhotosMatch = path.match(/^\/admin\/npcs\/([0-9a-f-]+)\/photos$/i);
+  const npcScriptsMatch = path.match(/^\/admin\/npcs\/([0-9a-f-]+)\/scripts$/i);
+  const npcScriptOneMatch = path.match(/^\/admin\/npcs\/([0-9a-f-]+)\/scripts\/([0-9a-f-]+)$/i);
+  const npcQuarantineMatch = path.match(/^\/admin\/npcs\/([0-9a-f-]+)\/quarantine$/i);
   const threadMessagesMatch = path.match(/^\/admin\/threads\/([0-9a-f-]+)\/messages$/i);
   const actor = cleanString(admin.display_name, 60) || user.id;
   if (path === '/admin/verifications' && req.method === 'GET') {
@@ -722,9 +731,10 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const service = (params.get('service') || '').trim();
     const gender = (params.get('gender') || '').trim();
     const active = (params.get('active') || '').trim();
+    const review = (params.get('review') || '').trim();
     const limit = Math.min(200, Math.max(20, Number(params.get('limit')) || 60));
     const offset = Math.max(0, Number(params.get('offset')) || 0);
-    let q = db.from('profiles').select('id,name,birth_date,gender,pronouns,company_or_org,duty_station,education_level,alma_mater,city,state,country_code,profession_category,profession_title,service,org_role,skill,class_of_service,bio,photos,interests,dating_goal,prompts,lifestyle,values_family,verification_status,npc_active,npc,created_at', { count: 'exact' })
+    let q = db.from('profiles').select('id,name,birth_date,gender,pronouns,company_or_org,duty_station,education_level,alma_mater,city,state,country_code,profession_category,profession_title,service,org_role,skill,class_of_service,bio,photos,interests,dating_goal,prompts,lifestyle,values_family,verification_status,npc_active,npc_ai_enabled,npc_photo_review,npc_quarantine_reason,npc,created_at', { count: 'exact' })
       .eq('is_npc', true);
     if (search) q = q.ilike('name', `%${search.replace(/[%_]/g, '')}%`);
     if (/^[A-Z]{2}$/.test(country)) q = q.eq('country_code', country);
@@ -732,6 +742,8 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     if (gender === 'female' || gender === 'male') q = q.eq('gender', gender);
     if (active === '1') q = q.eq('npc_active', true);
     if (active === '0') q = q.eq('npc_active', false);
+    if (review === 'quarantine') q = q.eq('npc_photo_review', 'quarantine');
+    if (review === 'ok') q = q.eq('npc_photo_review', 'ok');
     if (service) q = q.ilike('service', `%${service.replace(/[%_]/g, '')}%`);
     const { data: npcs, error, count } = await q.order('created_at', { ascending: false }).range(offset, offset + limit - 1);
     if (error) return err('Could not load NPCs.', 500, origin);
@@ -742,7 +754,9 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       professionCategory: p.profession_category, professionTitle: p.profession_title, classOfService: p.class_of_service,
       orgRole: p.org_role, skill: p.skill, service: p.service, bio: p.bio, photos: p.photos, interests: p.interests,
       datingGoal: p.dating_goal, prompts: p.prompts || [], lifestyle: p.lifestyle || null, values: p.values_family || null,
-      verificationStatus: p.verification_status, active: p.npc_active, persona: p.npc || {}, createdAt: p.created_at
+      verificationStatus: p.verification_status, active: p.npc_active, persona: p.npc || {},
+      aiEnabled: Boolean(p.npc_ai_enabled), photoReview: p.npc_photo_review || 'ok',
+      quarantineReason: p.npc_quarantine_reason || undefined, createdAt: p.created_at
     })), total: count ?? 0, limit, offset }, 200, origin);
   }
   // Facets for the persona filters: every country, class, service and gender in
@@ -835,6 +849,13 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       update.verified_at = status === 'verified' ? new Date().toISOString().slice(0, 10) : null;
     }
     if (typeof b.active === 'boolean') update.npc_active = b.active;
+    if (typeof b.aiEnabled === 'boolean') update.npc_ai_enabled = b.aiEnabled;
+    if (typeof b.photoReview === 'string') {
+      if (b.photoReview !== 'ok' && b.photoReview !== 'quarantine') return err('photoReview must be ok or quarantine.', 400, origin);
+      update.npc_photo_review = b.photoReview;
+      update.npc_quarantined_at = b.photoReview === 'quarantine' ? new Date().toISOString() : null;
+      if (b.photoReview === 'quarantine') update.npc_active = false;
+    }
     if (b.persona && typeof b.persona === 'object' && !Array.isArray(b.persona)) update.npc = b.persona;
     if (Array.isArray(b.interests)) update.interests = b.interests.map((v: unknown) => cleanString(v, 80)).filter(Boolean).slice(0, 8);
     if (Array.isArray(b.prompts)) update.prompts = cleanPrompts(b.prompts);
@@ -889,6 +910,116 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.photos', target_id: npc.id, detail: { count: photos.length, active: hasPhotos } });
     return json({ success: true, photos }, 200, origin);
   }
+  // ---- Persona scripts: every line a persona can say, editable by staff ----
+  // The persona engine reads these rows first and only falls back to the
+  // built-in pools when a persona has none, so this is the whole vocabulary of
+  // an NPC.
+  if (npcScriptsMatch && (req.method === 'GET' || req.method === 'POST')) {
+    const npcId = npcScriptsMatch[1];
+    const { data: npc } = await db.from('profiles').select('id,is_npc').eq('id', npcId).maybeSingle();
+    if (!npc?.is_npc) return err('NPC not found.', 404, origin);
+
+    if (req.method === 'GET') {
+      const { data, error } = await db.from('npc_scripts').select('*').eq('npc_id', npcId)
+        .order('kind', { ascending: true }).order('intent', { ascending: true }).order('position', { ascending: true });
+      if (error) return err('Could not load persona scripts.', 500, origin);
+      return json({ scripts: (data || []).map(scriptRow) }, 200, origin);
+    }
+
+    const b = await bodyJson(req);
+    const kind = String(b.kind || '');
+    if (kind !== 'greeting' && kind !== 'reply') return err('kind must be greeting or reply.', 400, origin);
+    const intent = kind === 'reply' ? String(b.intent || 'smalltalk') : null;
+    if (intent && !SCRIPT_INTENTS.includes(intent)) return err('Unknown intent.', 400, origin);
+    const text = cleanString(b.body, 600);
+    if (!text) return err('Message body required.', 400, origin);
+    const position = Number.isFinite(Number(b.position)) ? Math.trunc(Number(b.position)) : 0;
+    const { data: inserted, error } = await db.from('npc_scripts')
+      .insert({ npc_id: npcId, kind, intent, body: text, position })
+      .select('id').single();
+    if (error) return err('Could not save persona script.', 500, origin);
+    await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.script_created', target_id: npcId, detail: { kind, intent } });
+    return json({ success: true, id: inserted?.id }, 200, origin);
+  }
+  if (npcScriptOneMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
+    const [, npcId, scriptId] = npcScriptOneMatch;
+    const { data: existing } = await db.from('npc_scripts').select('id,npc_id').eq('id', scriptId).eq('npc_id', npcId).maybeSingle();
+    if (!existing) return err('Script not found.', 404, origin);
+    if (req.method === 'DELETE') {
+      const { error } = await db.from('npc_scripts').delete().eq('id', scriptId).eq('npc_id', npcId);
+      if (error) return err('Could not delete script.', 500, origin);
+      await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.script_deleted', target_id: npcId, detail: { scriptId } });
+      return json({ success: true }, 200, origin);
+    }
+    const b = await bodyJson(req);
+    const patch: Row = { updated_at: new Date().toISOString() };
+    if (b.body !== undefined) {
+      const text = cleanString(b.body, 600);
+      if (!text) return err('Message body required.', 400, origin);
+      patch.body = text;
+    }
+    if (b.enabled !== undefined) {
+      if (typeof b.enabled !== 'boolean') return err('enabled must be true or false.', 400, origin);
+      patch.enabled = b.enabled;
+    }
+    if (b.intent !== undefined) {
+      const intent = String(b.intent);
+      if (!SCRIPT_INTENTS.includes(intent)) return err('Unknown intent.', 400, origin);
+      patch.intent = intent;
+    }
+    if (b.position !== undefined) {
+      const position = Number(b.position);
+      if (!Number.isFinite(position)) return err('position must be a number.', 400, origin);
+      patch.position = Math.trunc(position);
+    }
+    if (Object.keys(patch).length === 1) return err('Nothing to update.', 400, origin);
+    const { error } = await db.from('npc_scripts').update(patch).eq('id', scriptId).eq('npc_id', npcId);
+    if (error) return err('Could not update script.', 500, origin);
+    await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.script_updated', target_id: npcId, detail: { scriptId, fields: Object.keys(patch) } });
+    return json({ success: true }, 200, origin);
+  }
+
+  // ---- Photo review: quarantine a persona that reads as generated ----
+  if (npcQuarantineMatch && req.method === 'POST') {
+    const npcId = npcQuarantineMatch[1];
+    const b = await bodyJson(req);
+    if (typeof b.quarantine !== 'boolean') return err('quarantine must be true or false.', 400, origin);
+    const { data: npc } = await db.from('profiles').select('id,is_npc').eq('id', npcId).maybeSingle();
+    if (!npc?.is_npc) return err('NPC not found.', 404, origin);
+    const reason = b.quarantine ? (cleanString(b.reason, 200) || 'Photo reads as generated') : null;
+    const patch: Row = {
+      npc_photo_review: b.quarantine ? 'quarantine' : 'ok',
+      npc_quarantine_reason: reason,
+      npc_quarantined_at: b.quarantine ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString()
+    };
+    // Quarantine always pauses. Releasing does not auto-activate: staff decide
+    // when the replacement photo is ready.
+    if (b.quarantine) patch.npc_active = false;
+    const { error } = await db.from('profiles').update(patch).eq('id', npcId);
+    if (error) return err('Could not update photo review.', 500, origin);
+    await db.from('admin_audit').insert({ admin_id: actor, action: b.quarantine ? 'npc.quarantined' : 'npc.released', target_id: npcId, detail: { reason } });
+    return json({ success: true, quarantined: b.quarantine, active: b.quarantine ? false : undefined }, 200, origin);
+  }
+  if (path === '/admin/npc-quarantine' && req.method === 'POST') {
+    const b = await bodyJson(req);
+    const ids = Array.isArray(b.ids) ? b.ids.filter(isUuid) : [];
+    if (!ids.length) return err('ids must be a non-empty array of persona ids.', 400, origin);
+    if (typeof b.quarantine !== 'boolean') return err('quarantine must be true or false.', 400, origin);
+    const reason = b.quarantine ? (cleanString(b.reason, 200) || 'Photo reads as generated') : null;
+    const patch: Row = {
+      npc_photo_review: b.quarantine ? 'quarantine' : 'ok',
+      npc_quarantine_reason: reason,
+      npc_quarantined_at: b.quarantine ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString()
+    };
+    if (b.quarantine) patch.npc_active = false;
+    const { error, count } = await db.from('profiles').update(patch, { count: 'exact' }).in('id', ids).eq('is_npc', true);
+    if (error) return err('Could not update photo review.', 500, origin);
+    await db.from('admin_audit').insert({ admin_id: actor, action: b.quarantine ? 'npc.quarantined_bulk' : 'npc.released_bulk', target_id: null, detail: { count: count || ids.length } });
+    return json({ success: true, updated: count || ids.length, quarantined: b.quarantine }, 200, origin);
+  }
+
   return err('Not found.', 404, origin);
 }
 
@@ -966,6 +1097,135 @@ Deno.serve(async (req) => {
   try {
     let body: Row | undefined;
     const getBody = async () => body ??= await bodyJson(req);
+    // ---- In-app notifications (poll-based, no push in this release) ----
+    if (path === '/notifications' && req.method === 'GET') {
+      const filters = reqUrl(req);
+      const since = filters.searchParams.get('since') || undefined;
+      const until = filters.searchParams.get('until') || undefined;
+      const kind = filters.searchParams.get('kind') || undefined;
+      const unreadOnly = filters.searchParams.get('unreadOnly') === '1';
+      const limit = Math.min(50, Math.max(1, Number(filters.searchParams.get('limit')) || 20));
+      const offsetNum = Math.max(0, Number(filters.searchParams.get('offset')) || 0);
+      if (since && Number.isNaN(Date.parse(since))) return err('Invalid "since" timestamp.', 400, origin);
+      if (until && Number.isNaN(Date.parse(until))) return err('Invalid "until" timestamp.', 400, origin);
+      if (kind && !['match','message','like'].includes(kind)) return err('kind must be match, message or like.', 400, origin);
+      // Notification contract (KB §notifications): match = mutual match created;
+      // message = any new DM in a thread you participate in; like = someone liked
+      // your profile. Every notification carries the actor and, for chat, the
+      // thread id + a short preview. privateIntroductionOptIn suppresses the name
+      // and photo of people outside your matches.
+      const uid = profile.id as string;
+      const { data: summaries, error: sumErr } = await db.rpc('wassaa_notification_summaries', {
+        p_user: uid, p_since: since || null, p_until: until || null, p_kind: kind || null, p_limit: limit + 1, p_offset: offsetNum
+      });
+      if (sumErr) return err('Could not load notifications.', 500, origin);
+      const rows = (summaries || []) as any[];
+      const hasMore = rows.length > limit;
+      const page = hasMore ? rows.slice(0, limit) : rows;
+      const unreadCount = page.filter((n: any) => !n.read_at).length;
+      const notifications = page.map((n: any) => ({
+        id: n.id, kind: n.kind, actorId: n.actor_id, threadId: n.thread_id || undefined,
+        messagePreview: n.message_preview || undefined,
+        createdAt: n.created_at,
+        readAt: n.read_at || undefined,
+        acknowledgementRequired: Boolean(n.acknowledgement_required)
+      }));
+      return json({ notifications, unreadCount, hasMore, limit, offset: offsetNum }, 200, origin);
+    }
+    if (path === '/notifications' && req.method === 'POST') {
+      const body = await getBody();
+      const ids = Array.isArray(body.ids) ? body.ids.filter(isUuid) : [];
+      if (!ids.length) return err('ids must be a non-empty array of notification ids.', 400, origin);
+      const { error } = await db.from('notification_reads').upsert(
+        { user_id: uid, notification_id: null, read_at: new Date().toISOString() },
+        { onConflict: 'user_id,notification_id' }
+      ).eq('user_id', uid);
+      const { error: markError } = await db.from('notification_reads').upsert(
+        { user_id: uid, notification_id: null, read_at: new Date().toISOString() },
+        { onConflict: 'user_id,notification_id' }
+      );
+      const { data: rows, error: filterError } = await db.from('notification_reads').upsert(
+        ids.map((id) => ({ user_id: uid, notification_id: id, read_at: new Date().toISOString() })),
+        { onConflict: 'user_id,notification_id' }
+      );
+      if (filterError) return err('Could not mark notifications read.', 500, origin);
+      return json({ success: true, read: ids.length }, 200, origin);
+    }
+    if (path === '/notifications/mark-read' && req.method === 'POST') {
+      const body = await getBody();
+      if (body.all !== true && body.all !== false && (!body.threadId || !isUuid(body.threadId))) {
+        return err('Pass { all: true } or { threadId: "<uuid>" }.', 400, origin);
+      }
+      if (body.all === true) {
+        const { error } = await db.from('notification_reads').upsert(
+          { user_id: uid, notification_id: null, read_at: new Date().toISOString() },
+          { onConflict: 'user_id,notification_id' }
+        ).eq('user_id', uid);
+      } else {
+        const rid = body.threadId as string;
+        const match = await db.from('matches').select('id').or(`user_a.eq.${uid},user_b.eq.${uid}`).eq('id', rid).maybeSingle();
+        if (!match) return err('Thread not found.', 404, origin);
+        const { error } = await db.from('notification_reads').upsert(
+          { user_id: uid, notification_id: null, read_at: new Date().toISOString() },
+          { onConflict: 'user_id,notification_id' }
+        );
+      }
+      return json({ success: true }, 200, origin);
+    }
+    if (path === '/notifications/preferences' && req.method === 'PATCH') {
+      const b = await getBody();
+      const old = (profile.notifications || {}) as Record<string, any>;
+      const turnOn = (key: string) => ({ ...(old || {}), [key]: true } as any);
+      const turnOff = (key: string) => ({ ...(old || {}), [key]: false } as any);
+      const out = b.markAsRead !== undefined ? turnOn('markAsRead') : old;
+      const patch: Record<string, any> = {};
+      if (b.message !== undefined) patch.message = typeof b.message === 'boolean' ? b.message : (old.message ?? true);
+      if (b.match !== undefined) patch.match = typeof b.match === 'boolean' ? b.match : (old.match ?? true);
+      if (b.like !== undefined) patch.like = typeof b.like === 'boolean' ? b.like : (old.like ?? true);
+      if (b.acknowledgementRequired !== undefined) patch.acknowledgementRequired = typeof b.acknowledgementRequired === 'boolean' ? b.acknowledgementRequired : (old.acknowledgementRequired ?? true);
+      if (!Object.keys(patch).length) return json({ success: true, preferences: out }, 200, origin);
+      patch.updated_at = new Date().toISOString();
+      const { data, error } = await db.from('profiles').update({ notifications: patch, updated_at: new Date().toISOString() }).eq('id', uid).select('notifications').single();
+      if (error) return err('Could not update notification preferences.', 500, origin);
+      return json({ success: true, preferences: data?.notifications || out }, 200, origin);
+    }
+    if (path === '/notifications/mute-thread' && req.method === 'POST') {
+      const b = await getBody(), threadId = String(b.threadId || '');
+      if (!isUuid(threadId)) return err('threadId is required.', 400, origin);
+      const { data: match } = await db.from('matches').select('id').eq('id', threadId).or(`user_a.eq.${uid},user_b.eq.${uid}`).maybeSingle();
+      if (!match) return err('Thread not found.', 404, origin);
+      const { error } = await db.from('notification_mutes').upsert(
+        { user_id: uid, thread_id: threadId, muted_at: new Date().toISOString() },
+        { onConflict: 'user_id,thread_id' }
+      );
+      if (error) return err('Could not mute this thread.', 500, origin);
+      return json({ success: true, muting: true }, 200, origin);
+    }
+    if (path === '/notifications/unmute-thread' && req.method === 'DELETE') {
+      const threadId = (reqUrl(req).pathname.match(/^\/notifications\/unmute-thread\/([0-9a-f-]+)$/i) || [])[1];
+      if (!threadId || !isUuid(threadId)) return err('threadId is required.', 400, origin);
+      const { data: match } = await db.from('matches').select('id').eq('id', threadId).or(`user_a.eq.${uid},user_b.eq.${uid}`).maybeSingle();
+      if (!match) return err('Thread not found.', 404, origin);
+      const { error } = await db.from('notification_mutes').delete().eq('user_id', uid).eq('thread_id', threadId);
+      return json({ success: true, muting: false }, 200, origin);
+    }
+    if (path === '/notifications/muted-threads' && req.method === 'GET') {
+      const { data: mutes } = await db.from('notification_mutes').select('thread_id,muted_at').eq('user_id', uid).order('muted_at', { ascending: false });
+      const ids = (mutes || []).map((m: any) => m.thread_id);
+      const { data: threads } = ids.length ? await db.from('matches').select('id').in('id', ids) : { data: [] as any[] };
+      const threadIds = new Set((threads || []).map((t: any) => t.id));
+      const byName = new Map<string, string>();
+      const partnerIds = [...new Set([(match?.user_a || uid), (match?.user_b || uid)])];
+      // load partner names for muted threads
+      if (ids.length) {
+        const { data: profiles } = await db.from('profiles').select('id,name,photos').in('id', ids).or(`user_a.eq.${uid},user_b.eq.${uid}`);
+        for (const p of (profiles || [])) byName.set(p.id, String(p.name || 'Member'));
+      }
+      return json({ muted: (mutes || []).map((m: any) => ({
+        threadId: m.thread_id, mutedAt: m.muted_at, partnerName: byName.get(m.thread_id) || 'Member'
+      }))}, 200, origin);
+    }
+
     // Session and own-profile operations
     if (path === '/auth/session' && req.method === 'GET') {
       // Lazy daily credit drip: applied once per calendar day at session load.
@@ -1162,30 +1422,20 @@ Deno.serve(async (req) => {
     // Likes, passes, received likes
     if (path === '/likes' && req.method === 'POST') {
       const limited = await allowAction('like', 120, 600); if (limited) return limited;
-      const b = await getBody(), targetId = cleanString(b.targetUserId, 64), kind = b.superLike ? 'super' : 'like';
+      const b = await getBody(), targetId = cleanString(b.targetUserId, 64);
       if (!isUuid(targetId) || targetId === uid) return err('You cannot like your own profile.', 400, origin);
       const { data: target } = await db.from('profiles').select('*').eq('id', targetId).is('deleted_at', null).maybeSingle();
       if (!target || target.blocked_us) return err('Profile not found.', 404, origin);
-      // Super Likes cost 3 credits; plain likes stay free under the daily
-      // cap. 20 free right-swipes a day for every tier, then 1 credit per
-      // extra swipe — exhausted swipers can pay their way past the cap.
-      // Pre-charge, then refund if the swipe does not land.
-      let chargedSuper = false;
-      if (kind === 'super') {
-        const { data: balance } = await db.rpc('wassaa_spend_credit', { p_profile: uid, p_delta: PRICING.superLike, p_reason: 'super_like', p_reference: targetId });
-        if (typeof balance !== 'number' || balance < 0) return err(`You need ${PRICING.superLike} credits for a Super Like.`, 402, origin, 'CREDITS_NEEDED');
-        chargedSuper = true;
-      }
+      // 20 free right-swipes a day for every tier, then 1 credit per extra
+      // swipe — exhausted swipers can pay their way past the cap. The charge is
+      // taken first and refunded if the swipe does not land.
       let paidSwipe = false; // 1-credit charge for a swipe past the daily cap
-      // Anything that means the swipe did not land returns the member's
-      // credits — Super Like and over-cap swipe alike.
       const refund = async () => {
-        if (chargedSuper) await db.rpc('wassaa_grant_credit', { p_profile: uid, p_delta: PRICING.superLike, p_reason: 'refund', p_reference: targetId });
         if (paidSwipe) await db.rpc('wassaa_grant_credit', { p_profile: uid, p_delta: PRICING.paidSwipe, p_reason: 'refund', p_reference: targetId });
       };
       let outcome: Row | string | null = null;
       let error = null as unknown;
-      ({ data: outcome, error } = await db.rpc('wassaa_record_like', { p_from: uid, p_to: targetId, p_kind: kind, p_daily_limit: PRICING.freeDailySwipes, p_weekly_super_limit: -1 }));
+      ({ data: outcome, error } = await db.rpc('wassaa_record_like', { p_from: uid, p_to: targetId, p_kind: 'like', p_daily_limit: PRICING.freeDailySwipes, p_weekly_super_limit: -1 }));
       if (outcome === 'daily_limit') {
         // Cap reached: 1 credit buys this swipe past the limit.
         const { data: swipeBalance } = await db.rpc('wassaa_spend_credit', { p_profile: uid, p_delta: PRICING.paidSwipe, p_reason: 'extra_swipe', p_reference: targetId });
@@ -1194,12 +1444,11 @@ Deno.serve(async (req) => {
           return err(`Daily swipe limit reached — ${PRICING.paidSwipe} credit per extra swipe. Top up to keep swiping.`, 402, origin, 'CREDITS_NEEDED');
         }
         paidSwipe = true;
-        ({ data: outcome, error } = await db.rpc('wassaa_record_like', { p_from: uid, p_to: targetId, p_kind: kind, p_daily_limit: -1, p_weekly_super_limit: -1 }));
+        ({ data: outcome, error } = await db.rpc('wassaa_record_like', { p_from: uid, p_to: targetId, p_kind: 'like', p_daily_limit: -1, p_weekly_super_limit: -1 }));
       }
       if (error) { await refund(); return err('Could not save this like.', 500, origin); }
       if (outcome === 'blocked') { await refund(); return err('Unable to interact with this profile.', 403, origin); }
       if (outcome === 'daily_limit') { await refund(); return err('Daily like limit reached. Try again tomorrow.', 402, origin, 'LIKE_LIMIT'); }
-      if (outcome === 'super_limit') { await refund(); return err('Your Super Like could not be sent.', 402, origin, 'SUPER_LIMIT'); }
       if (outcome === 'already') await refund();
       // Persona reciprocity (KB §18C). Seeded personas never act on their own,
       // and a match needs a swipe in both directions, so without this a member
@@ -1220,7 +1469,7 @@ Deno.serve(async (req) => {
       }
       const { data: matchId } = await db.rpc('wassaa_find_or_create_match', { p_a: uid, p_b: targetId });
       let balance: number | undefined;
-      if (paidSwipe || kind === 'super') { const { data: fresh } = await db.from('profiles').select('credits').eq('id', uid).maybeSingle(); balance = fresh?.credits; }
+      if (paidSwipe) { const { data: fresh } = await db.from('profiles').select('credits').eq('id', uid).maybeSingle(); balance = fresh?.credits; }
       return json({ success: true, isMatch: Boolean(matchId), ...(balance != null ? { balance } : {}), ...(matchId ? { match: { id: matchId, partner: profileForViewer(target, uid, true) } } : {}), ...(outcome === 'already' ? { already: true } : {}) }, 200, origin);
     }
     // Cold opens: a member may message someone they have not matched with.
@@ -1243,7 +1492,7 @@ Deno.serve(async (req) => {
       const { data: existingThread } = await db.from('matches').select('id').eq('user_a', a).eq('user_b', c).maybeSingle();
       let matchId: string | undefined = existingThread?.id;
       if (!matchId) {
-        const { data: created, error: createError } = await db.from('matches').insert({ user_a: a, user_b: c }).select('id').single();
+        const { data: created, error: createError } = await db.from('matches').insert({ user_a: a, user_b: c, origin: 'cold' }).select('id').single();
         if (createError) {
           // unique(user_a,user_b) race — a concurrent like or open won it
           const { data: again } = await db.from('matches').select('id').eq('user_a', a).eq('user_b', c).maybeSingle();
@@ -1300,8 +1549,24 @@ Deno.serve(async (req) => {
       const output = (matches || []).flatMap((m: Row) => {
         const partner = partnerMap.get(m.partner_id);
         if (!partner) return [];
-        const lastMessage = !m.last_kind ? 'You matched' : m.last_kind === 'photo' ? (m.last_caption ? `Photo: ${m.last_caption}` : 'Shared a photo') : m.last_text || 'You matched';
-        return [{ id: m.match_id, matchedAt: m.matched_at, profile: profileForViewer(partner, uid, true), lastMessage, lastMessageTime: m.last_created_at || m.matched_at, unread: Number(m.unread_count) || 0 }];
+        const cold = m.origin === 'cold';
+        const lastMessage = !m.last_kind
+          ? (cold ? 'You started this conversation' : 'You matched')
+          : m.last_kind === 'photo'
+            ? (m.last_caption ? `Photo: ${m.last_caption}` : 'Shared a photo')
+            : m.last_text || (cold ? 'You started this conversation' : 'You matched');
+        return [{
+          id: m.match_id,
+          matchedAt: m.matched_at,
+          profile: profileForViewer(partner, uid, true),
+          lastMessage,
+          lastMessageTime: m.last_created_at || m.matched_at,
+          unread: Number(m.unread_count) || 0,
+          // Cold outreach stays out of the matches list; it is a conversation,
+          // not a match, until the other side likes back.
+          cold,
+          mutual: Boolean(m.mutual)
+        }];
       });
       return json({ matches: output }, 200, origin);
     }
@@ -1471,14 +1736,14 @@ Deno.serve(async (req) => {
     // Billing, with provider-verified fulfillment only.
     if (path === '/billing/entitlements' && req.method === 'GET') {
       const tier = profile.tier || 'free';
-      const base = tier === 'hyper_premium' ? { tier, dailyLikes: -1, superLikesPerWeek: 15, canSeeLikes: true, canRewind: true, incognito: true, privateIntroduction: true, boostsPerMonth: 3, readReceipts: true } : tier === 'premium' ? { tier, dailyLikes: -1, superLikesPerWeek: 5, canSeeLikes: true, canRewind: true, incognito: false, privateIntroduction: false, boostsPerMonth: 1, readReceipts: false } : { tier: 'free', dailyLikes: PRICING.freeDailySwipes, superLikesPerWeek: 1, canSeeLikes: false, canRewind: false, incognito: false, privateIntroduction: false, boostsPerMonth: 0, readReceipts: false };
+      const base = tier === 'hyper_premium' ? { tier, dailyLikes: -1, canSeeLikes: true, canRewind: true, incognito: true, privateIntroduction: true, boostsPerMonth: 3, readReceipts: true } : tier === 'premium' ? { tier, dailyLikes: -1, canSeeLikes: true, canRewind: true, incognito: false, privateIntroduction: false, boostsPerMonth: 1, readReceipts: false } : { tier: 'free', dailyLikes: PRICING.freeDailySwipes, canSeeLikes: false, canRewind: false, incognito: false, privateIntroduction: false, boostsPerMonth: 0, readReceipts: false };
       const { data: fresh } = await db.from('profiles').select('credits,revealed_likes_at').eq('id', uid).maybeSingle();
       const credits = fresh?.credits ?? profile.credits ?? 0;
       // "See who liked you" is a credit feature now: unlocked for 24h per reveal.
       const revealed = Boolean(fresh?.revealed_likes_at) && Date.now() - Date.parse(fresh.revealed_likes_at) < 24 * 3600 * 1000;
       const countryCode = (profile.country_code || 'NG').toUpperCase();
       const packs = await packsForCountry(db, countryCode);
-      return json({ ...base, canSeeLikes: revealed, credits, revealLikesCost: 15, pricing: { text: PRICING.text, photo: PRICING.photo, coldBase: PRICING.coldBase, coldStep: PRICING.coldStep, coldMax: PRICING.coldMax, freeDailySwipes: PRICING.freeDailySwipes, paidSwipe: PRICING.paidSwipe, superLike: PRICING.superLike, revealLikes: PRICING.revealLikes }, freeChat: isFreeChat(profile), creditRegionSupported: creditRegionSupported(countryCode), dailyCreditAllowance: dailyCreditAllowance(profile), countryCode, packBand: packs[0]?.band || 'ng', settlementCurrency: 'NGN', packs }, 200, origin);
+      return json({ ...base, canSeeLikes: revealed, credits, revealLikesCost: 15, pricing: { text: PRICING.text, photo: PRICING.photo, coldBase: PRICING.coldBase, coldStep: PRICING.coldStep, coldMax: PRICING.coldMax, freeDailySwipes: PRICING.freeDailySwipes, paidSwipe: PRICING.paidSwipe, revealLikes: PRICING.revealLikes }, freeChat: isFreeChat(profile), creditRegionSupported: creditRegionSupported(countryCode), dailyCreditAllowance: dailyCreditAllowance(profile), countryCode, packBand: packs[0]?.band || 'ng', settlementCurrency: 'NGN', packs }, 200, origin);
     }
     if (path === '/billing/checkout' && req.method === 'POST') {
       const limited = await allowAction('checkout', 5, 600); if (limited) return limited;
@@ -1524,6 +1789,16 @@ Deno.serve(async (req) => {
       return json({ success: true, tier: current?.tier || profile.tier, credits: current?.credits ?? 0 }, 200, origin);
     }
     if (path === '/billing/sandbox/complete' && req.method === 'POST') return err('Sandbox payment completion is disabled.', 404, origin);
+
+    // ---- notifications (in-app feed, mark-read, mute, preferences) ----
+    // ---- Admin notifications (single source of truth: supabase/functions/api/notifications.ts) ----
+    {
+      const r = await adminNotificationsRoute(db, user, profile, uid, path, req, origin, actor);
+      if (r) return r;
+    }
+
+    const notificationResult = await notificationsRoute(db, profile, uid, path, req, origin);
+    if (notificationResult) return notificationResult;
 
     return err(`No route: ${req.method} ${path}`, 404, origin);
   } catch (e) {

@@ -124,6 +124,45 @@ export function pickReply(intent: Intent, ctx: PersonaContext, rng: () => number
   return fill(pickFrom(rng, pool), ctx);
 }
 
+/**
+ * A persona's own script set, loaded from `npc_scripts`. Every persona owns its
+ * lines, so two personas never open with the same sentence. Empty pools fall
+ * back to the shared GREETINGS/REPLIES above.
+ */
+export interface ScriptSet {
+  greeting: string[];
+  reply: Record<string, string[]>;
+}
+
+export function emptyScripts(): ScriptSet {
+  return { greeting: [], reply: {} };
+}
+
+export function addScript(set: ScriptSet, kind: string, intent: string | null, body: string): void {
+  if (!body || !body.trim()) return;
+  if (kind === 'greeting') set.greeting.push(body);
+  else {
+    const key = intent || 'offTopic';
+    (set.reply[key] ||= []).push(body);
+  }
+}
+
+/** Pick this persona's line, or null when it has nothing for that bucket. */
+export function pickScript(
+  set: ScriptSet | null | undefined,
+  kind: 'greeting' | 'reply',
+  intent: string | null,
+  ctx: PersonaContext,
+  rng: () => number = Math.random
+): string | null {
+  if (!set) return null;
+  const pool = kind === 'greeting'
+    ? set.greeting
+    : (intent ? set.reply[intent] : undefined) || set.reply.offTopic;
+  if (!pool || !pool.length) return null;
+  return fill(pickFrom(rng, pool), ctx);
+}
+
 export function buildContext(humanName: string, npc: { name?: string; city?: string; skill?: string; professionTitle?: string; interests?: string[] }): PersonaContext {
   const first = (humanName || 'there').trim().split(/\s+/)[0] || 'there';
   const me = (npc.name || 'me').trim().split(/\s+/)[0] || 'me';

@@ -153,6 +153,10 @@ export interface MatchItem {
   lastMessage: string;
   lastMessageTime: string;
   unreadCount: number;
+  /** True when this thread started as cold outreach, not a mutual match. */
+  cold?: boolean;
+  /** False while the other side has not liked back. */
+  mutual?: boolean;
   isFavorite?: boolean;
   isNew?: boolean;
   messages: ChatMessage[];

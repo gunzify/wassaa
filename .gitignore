@@ -10,7 +10,6 @@ coverage/
 /supabase/.temp/
 .wrangler/
 .freebuff/
-/backend/.legacy-firebase/
 # generated portrait raws/crops (regenerate with scripts/persona-photos.mjs)
 /.persona-photos/
 /.cloud-attachments/

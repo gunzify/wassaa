@@ -3,7 +3,6 @@ import { motion, animate, useMotionValue, useTransform } from 'motion/react';
 import {
   Heart,
   X,
-  Star,
   SlidersHorizontal,
   MapPin,
   RotateCcw,
@@ -27,7 +26,6 @@ interface DiscoverScreenProps {
   credits?: number;
   onSwipeLeft: (profile: UserProfile) => void;
   onSwipeRight: (profile: UserProfile) => void;
-  onSuperLike: (profile: UserProfile) => void;
   onOpenProfile: (profile: UserProfile) => void;
   onOpenFilter: () => void;
   onOpenStore: () => void;
@@ -40,18 +38,41 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
   credits,
   onSwipeLeft,
   onSwipeRight,
-  onSuperLike,
   onOpenProfile,
   onOpenFilter,
   onOpenStore,
   onResetDeck
 }) => {
-  const [exitDirection, setExitDirection] = useState<'left' | 'right' | 'up' | null>(null);
+  const [exitDirection, setExitDirection] = useState<'left' | 'right' | null>(null);
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
+  const [headerHidden, setHeaderHidden] = useState(false);
 
   useEffect(() => {
     setCurrentPhotoIndex(0);
   }, [currentProfile?.id]);
+
+  // The Discover bar hides while the member is reading the deck and returns on
+  // an upward scroll, so credits and filters stay one gesture away without
+  // eating the top of every card.
+  useEffect(() => {
+    let last = window.scrollY;
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      window.requestAnimationFrame(() => {
+        const current = window.scrollY;
+        const delta = current - last;
+        if (current < 24) setHeaderHidden(false);
+        else if (delta > 3) setHeaderHidden(true);
+        else if (delta < -3) setHeaderHidden(false);
+        last = current;
+        ticking = false;
+      });
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
 
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -67,20 +88,36 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
   const nopeRotate = useTransform(x, [-20, -80], [5, 10]);
 
   // A flick needs less travel than a slow drag, so the deck answers the same
-  // gesture whether it was thrown or pushed.
-  const SWIPE_TRAVEL = 78;
-  const SWIPE_FLICK = 0.22;
-
-  const superLikeOpacity = useTransform(y, [-16, -76], [0, 1]);
-  const superLikeScale = useTransform(y, [-16, -76], [0.82, 1.04]);
+  // gesture whether it was thrown or pushed. Travel is deliberately longer than
+  // a thumb wobble: a swipe should be a decision, not an accident.
+  const SWIPE_TRAVEL = 108;
+  const SWIPE_FLICK = 0.16;
+  const TAP_SLOP = 10;
 
   const nextCardScale = useTransform(x, [-220, 0, 220], [1, 0.95, 1]);
   const nextCardY = useTransform(x, [-220, 0, 220], [0, 12, 0]);
   const nextCardOpacity = useTransform(x, [-220, 0, 220], [1, 0.7, 1]);
 
-  // A photo-zone tap must never fire straight after a real drag.
-  const suppressTapUntil = useRef(0);
-  const pointerStart = useRef<{ x: number; y: number } | null>(null);
+  // One gesture record decides tap vs drag. Motion only reports a drag after it
+  // passes its own threshold, so a short wobble used to fall through to onClick
+  // and open the profile mid-swipe. This tracks the pointer path instead, which
+  // means any real movement cancels the tap.
+  const gesture = useRef<{ x: number; y: number; at: number; moved: boolean } | null>(null);
+  const onPointerDownCapture = (event: React.PointerEvent) => {
+    gesture.current = { x: event.clientX, y: event.clientY, at: Date.now(), moved: false };
+  };
+  const onPointerMoveCapture = (event: React.PointerEvent) => {
+    const record = gesture.current;
+    if (record && Math.hypot(event.clientX - record.x, event.clientY - record.y) > TAP_SLOP) {
+      record.moved = true;
+    }
+  };
+  /** True only for a clean, quick press that never travelled. */
+  const isTap = () => {
+    const record = gesture.current;
+    if (!record) return true;
+    return !record.moved && Date.now() - record.at < 900;
+  };
 
   // Reset before paint so the next card never flashes at the previous card's
   // flung-off position. Animating motion values directly (instead of relying on
@@ -98,37 +135,33 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
     setExitDirection(null);
   }, [currentProfile?.id, x, y, cardOpacity]);
 
-  const settleDeck = (direction: 'left' | 'right' | 'up') => {
+  const settleDeck = (direction: 'left' | 'right') => {
     if (!currentProfile || exitDirection) return;
     setExitDirection(direction);
     const ease = [0.22, 0.61, 0.36, 1] as const;
-    animate(x, direction === 'left' ? -520 : direction === 'right' ? 520 : 0, { duration: 0.24, ease });
-    animate(y, direction === 'up' ? -520 : 0, { duration: 0.24, ease });
+    animate(x, direction === 'left' ? -520 : 520, { duration: 0.24, ease });
+    animate(y, 0, { duration: 0.24, ease });
     animate(cardOpacity, 0, { duration: 0.22, ease });
     window.setTimeout(() => {
       if (direction === 'left') onSwipeLeft(currentProfile);
       if (direction === 'right') onSwipeRight(currentProfile);
-      if (direction === 'up') onSuperLike(currentProfile);
       setExitDirection(null);
     }, 245);
   };
 
   const handleDragEnd = (_: unknown, info: { offset: { x: number; y: number }; velocity: { x: number; y: number } }) => {
-    suppressTapUntil.current = Date.now() + 260;
     if (!currentProfile || exitDirection) return;
 
     const travelX = info.offset.x + info.velocity.x * SWIPE_FLICK;
-    const travelY = info.offset.y + info.velocity.y * SWIPE_FLICK;
-
-    if (travelY < -100 && Math.abs(info.offset.x) < Math.abs(info.offset.y)) {
-      settleDeck('up');
-      return;
-    }
-    if (travelX > SWIPE_TRAVEL) {
+    const travelY = Math.abs(info.offset.y + info.velocity.y * SWIPE_FLICK);
+    // The swipe has to be mostly horizontal. A diagonal push is usually a
+    // scroll or an unsure thumb, and should settle back rather than decide.
+    const horizontal = Math.abs(travelX) >= travelY * 1.1;
+    if (horizontal && travelX > SWIPE_TRAVEL) {
       settleDeck('right');
       return;
     }
-    if (travelX < -SWIPE_TRAVEL) {
+    if (horizontal && travelX < -SWIPE_TRAVEL) {
       settleDeck('left');
       return;
     }
@@ -140,7 +173,7 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
 
   const canCyclePhotos = () => {
     if (!currentProfile || currentProfile.photos.length < 2) return false;
-    return Date.now() >= suppressTapUntil.current;
+    return isTap();
   };
 
   const showPrevPhoto = () => {
@@ -158,8 +191,16 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
 
   return (
     <div className="flex w-full select-none flex-col">
-      {/* Top bar: credits live here, not in the dock */}
-      <div className="mb-2.5 flex items-center justify-between">
+      {/* Top bar: credits live here, not in the dock. Slides away while the
+          deck is being read and returns on a scroll up. */}
+      <motion.div
+        initial={false}
+        animate={{ y: headerHidden ? -72 : 0, opacity: headerHidden ? 0 : 1 }}
+        transition={{ type: 'spring', stiffness: 420, damping: 36 }}
+        className={`mb-2.5 flex items-center justify-between ${headerHidden ? 'pointer-events-none' : ''}`}
+        aria-hidden={headerHidden}
+        data-discover-header
+      >
         <h1 className="t-title">Discover</h1>
         <div className="flex shrink-0 items-center gap-2">
           <button
@@ -182,11 +223,15 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
             <SlidersHorizontal className="h-5 w-5" />
           </button>
         </div>
-      </div>
+      </motion.div>
 
       {/* Stage — takes every pixel the header, actions and dock leave over, so
           the card is as bold as the device allows. */}
-      <div className="relative h-[clamp(20rem,calc(100dvh-14.75rem),46rem)] w-full">
+      <div
+        className="relative h-[clamp(20rem,calc(100dvh-14.75rem),46rem)] w-full"
+        onPointerDownCapture={onPointerDownCapture}
+        onPointerMoveCapture={onPointerMoveCapture}
+      >
         {nextProfile && currentProfile && (
           <motion.div
             style={{ scale: nextCardScale, y: nextCardY, opacity: nextCardOpacity }}
@@ -256,11 +301,6 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
                 <button
                   type="button"
                   onClick={showPrevPhoto}
-                  onPointerDown={(e) => { pointerStart.current = { x: e.clientX, y: e.clientY }; }}
-                  onPointerUp={(e) => {
-                    const start = pointerStart.current;
-                    if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) return;
-                  }}
                   className="h-full w-[32%] cursor-pointer bg-transparent"
                   aria-label={photosCount > 1 ? 'Previous photo' : undefined}
                   tabIndex={-1}
@@ -268,7 +308,8 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    if (Date.now() < suppressTapUntil.current) return;
+                    // A swipe that ends here must never also open the profile.
+                    if (!isTap()) return;
                     onOpenProfile(currentProfile);
                   }}
                   className="h-full w-[36%] cursor-pointer bg-transparent"
@@ -278,7 +319,6 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
                 <button
                   type="button"
                   onClick={showNextPhoto}
-                  onPointerDown={(e) => { pointerStart.current = { x: e.clientX, y: e.clientY }; }}
                   className="h-full w-[32%] cursor-pointer bg-transparent"
                   aria-label={photosCount > 1 ? 'Next photo' : undefined}
                   tabIndex={-1}
@@ -297,12 +337,6 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
                 className="pointer-events-none absolute right-5 top-[22%] z-30 rounded-xl border-2 border-rose-300/90 px-3.5 py-1.5 text-base font-extrabold uppercase tracking-[0.2em] text-rose-200 backdrop-blur-sm"
               >
                 Pass
-              </motion.div>
-              <motion.div
-                style={{ opacity: superLikeOpacity, scale: superLikeScale }}
-                className="pointer-events-none absolute left-1/2 top-[18%] z-30 -translate-x-1/2 rounded-xl border-2 border-sky-300/90 px-3.5 py-1.5 text-sm font-extrabold uppercase tracking-[0.2em] text-sky-200 backdrop-blur-sm"
-              >
-                Super like
               </motion.div>
 
               {/* The card's story: name → service → place → words → hobbies.
@@ -381,17 +415,6 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
           title="Pass"
         >
           <X className="h-[1.5rem] w-[1.5rem]" strokeWidth={2.3} />
-        </button>
-
-        <button
-          type="button"
-          onClick={() => settleDeck('up')}
-          disabled={!currentProfile || !!exitDirection}
-          className="flex h-[3rem] w-[3rem] items-center justify-center rounded-full border border-line bg-surface text-verified shadow-[0_2px_10px_-2px_rgba(26,24,22,0.14)] transition-colors hover:border-verified/40 hover:bg-verified-tint disabled:cursor-not-allowed disabled:opacity-30"
-          aria-label="Super like"
-          title="Super like"
-        >
-          <Star className="h-[1.35rem] w-[1.35rem]" />
         </button>
 
         <button

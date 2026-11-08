@@ -906,7 +906,10 @@ Ran the Cloudflare `security-audit` skill over the whole repo (scope: `frontend/
 
 ### Swipes
 - 20 free right-swipes per day per member; every further swipe costs 1 credit.
-- Super Like 3 credits. Reveal-likes 15 credits (24h unlock).
+- Super Like was removed on 2026-11-08 (button, handler, API branch, credit
+  charge and `superLikesPerWeek` entitlement). `wassaa_record_like` still accepts
+  `'super'` for historical rows; nothing sends it.
+- Reveal-likes 15 credits (24h unlock).
 
 ### Photos / IDOR
 - Profile-photo writes are ownership-checked (`ownedPhotoValues`): a stored
@@ -970,3 +973,85 @@ geolocation for self only. The CSP allows `'unsafe-inline'` scripts because the
 built HTML carries the pre-paint theme bootstrap; remote script hosts are
 limited to Google Identity Services. Supabase (HTTP + websocket), the R2
 S3 endpoint, Google and PostHog are the only permitted `connect-src` origins.
+
+## Inbox split, persona scripts, AI replies, gesture pass (2026-11-08)
+
+### Cold DMs are not matches
+- `matches.origin` is `'match'` (mutual swipe) or `'cold'` (outreach opened from
+  a profile). `/direct-threads` writes `'cold'`; `wassaa_find_or_create_match`
+  creates `'match'` and, when an existing cold thread becomes mutual, flips the
+  origin and inserts the "You matched!" system line exactly once.
+- `wassaa_match_summaries` now returns `origin` and `mutual`; `/matches` maps
+  them to `cold` and `mutual` and never says "You matched" on a cold thread
+  (it says "You started this conversation").
+- Messages tab renders **New messages** (cold, "Not a match yet") above
+  **Matches**. The Matches tab lists mutual threads only.
+- Backfill marks a thread cold when either side has no non-pass swipe.
+- Migration: `supabase/migrations/20261107020000_npc_scripts_and_inbox_split.sql`.
+
+### Every persona owns its lines (`npc_scripts`)
+- Table `npc_scripts(npc_id, kind, intent, body, position, enabled)`; RLS on,
+  no policies — only the service role reads/writes.
+- The engine (`npc.ts`) batch-loads scripts for every candidate thread in one
+  query, picks the persona's own greeting/reply, and falls back to the shared
+  `GREETINGS`/`REPLIES` pools only when a persona has no rows.
+- `scripts/npc-scripts.mjs` seeds 4 greetings + 3 replies × 7 intents per
+  persona, deterministic from the persona id. Greetings are **globally unique**
+  (a Set is enforced; collisions get a personality quirk appended). Each frame
+  keeps the persona's city/work/interest, so openers read like a person, not a
+  template. `--force` rewrites, `--dry` previews.
+- Current seed: **839 personas → 20,975 rows → 3,356 unique greetings**.
+- Admin console → Personas → **Scripts** lists every line grouped by opening /
+  intent, with edit, delete and add. Endpoints:
+  `GET|POST /admin/npcs/:id/scripts`, `PATCH|DELETE /admin/npcs/:id/scripts/:scriptId`.
+  `{you}` is replaced with the member's first name at send time.
+
+### Optional AI replies
+- `supabase/functions/api/ai.ts`. Off unless the project has `AI_API_KEY`.
+  Any OpenAI-compatible endpoint works: `AI_API_URL` (default OpenRouter
+  `https://openrouter.ai/api/v1`) and `AI_MODEL` (default `openai/gpt-4o-mini`).
+- Enabled per persona (`profiles.npc_ai_enabled`, checkbox **AI replies** in the
+  admin sheet). The prompt carries both profiles plus the last 12 messages and
+  tells the model to answer this conversation, never repeat, never mention AI,
+  1–2 sentences. Any failure/timeout (9s) falls back to the persona's scripts.
+- Two personas therefore answer differently even to the same text: different
+  persona facts in the system prompt, different thread history.
+
+### Photo quarantine
+- `profiles.npc_photo_review` (`ok` | `quarantine`), `npc_quarantine_reason`,
+  `npc_quarantined_at`. Quarantine always pauses; release never auto-activates.
+- Engine and admin list both ignore quarantined personas.
+- Endpoints: `POST /admin/npcs/:id/quarantine` and bulk `POST /admin/npc-quarantine`.
+  Console card buttons: **Quarantine photo / Release photo**, plus a badge.
+- `scripts/npc-quarantine.mjs --duplicates [--list]` finds active personas
+  wearing a face another active persona already uses (objective "not a real
+  person" evidence) and quarantines the later clones. Run on 2026-11-08:
+  274 active, 261 distinct photos, **13 duplicates quarantined**.
+  `--ids …` / `--release` handle a reviewed list.
+
+### Discover card + header
+- Super Like is gone from the deck, the profile sheet, `api.like`, `Pricing`
+  and entitlements.
+- Tap vs swipe: a pointer record cancels any tap that moved more than 10 px, so
+  a swipe can no longer open the profile sheet. Swipe travel raised 78 → 108 px,
+  flick weight 0.22 → 0.16, and the gesture must be mostly horizontal (1.1×).
+- The Discover bar (title + credits + filters) slides up while the page is
+  scrolled down and returns on an upward scroll
+  (`window.scrollY` listener, rAF-throttled).
+
+### Admin console: no scroll jump
+- Pause/Activate patches the record and repaints **only that card**
+  (`replaceNpcCard`), so the list no longer reloads and throws the page to the
+  top. `loadNpcs()` now always passes `reset` where a full reload is intended
+  (tab switch, after save, after photo save) — previously it appended the next
+  page on every call.
+
+### Deployment state
+- Applied: `20261107020000_npc_scripts_and_inbox_split`, `20261107030000_notifications`
+  (the latter written by the notifications work) and the script seed.
+- **Not deployed:** the `api` Edge Function. The local CLI account cannot see
+  project `avlbsficfejvwokxkgyl` (`functions deploy/list` → 403), so the live
+  function is still version 31 and does not serve the new script/quarantine
+  routes or the `cold` flag yet. Databases changes are live; deploy needs the
+  project owner's `SUPABASE_ACCESS_TOKEN` (`npx supabase functions deploy api
+  --project-ref avlbsficfejvwokxkgyl`) or the console.

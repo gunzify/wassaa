@@ -54,11 +54,15 @@ export const MatchesListScreen: React.FC<MatchesListScreenProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'matches' | 'likes'>('matches');
   const isMessages = variant === 'messages';
-  const count = isMessages ? matches.length : activeTab === 'matches' ? matches.length : likesReceived.length;
+  // Cold outreach is a conversation, not a match. It gets its own section in
+  // Messages and never shows up under "Your matches".
+  const coldThreads = matches.filter((match) => match.cold);
+  const mutualThreads = matches.filter((match) => !match.cold);
+  const count = isMessages ? matches.length : activeTab === 'matches' ? mutualThreads.length : likesReceived.length;
 
-  const conversationList = (
+  const renderConversations = (list: MatchItem[]) => (
     <div className="card card-flush overflow-hidden">
-      {matches.map((match, index) => (
+      {list.map((match, index) => (
         <React.Fragment key={match.id}>
           {index > 0 && <div className="ml-[5.5rem] h-px bg-line-soft" />}
           <button
@@ -232,7 +236,25 @@ export const MatchesListScreen: React.FC<MatchesListScreenProps> = ({
       {isMessages ? (
         matches.length > 0 ? (
           <>
-            {conversationList}
+            {coldThreads.length > 0 && (
+              <section className="mb-5">
+                <div className="mb-2 flex items-baseline justify-between gap-3 px-1">
+                  <h2 className="t-section">New messages</h2>
+                  <span className="t-meta">Not a match yet</span>
+                </div>
+                {renderConversations(coldThreads)}
+              </section>
+            )}
+            {mutualThreads.length > 0 && (
+              <section>
+                {coldThreads.length > 0 && (
+                  <div className="mb-2 px-1">
+                    <h2 className="t-section">Matches</h2>
+                  </div>
+                )}
+                {renderConversations(mutualThreads)}
+              </section>
+            )}
             {suggestionRail}
           </>
         ) : (
@@ -310,9 +332,9 @@ export const MatchesListScreen: React.FC<MatchesListScreenProps> = ({
           </div>
           {suggestionRail}
         </>
-      ) : activeTab === 'matches' && matches.length > 0 ? (
+      ) : activeTab === 'matches' && mutualThreads.length > 0 ? (
         <>
-          {conversationList}
+          {renderConversations(mutualThreads)}
           {suggestionRail}
         </>
       ) : (
