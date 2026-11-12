@@ -1,5 +1,5 @@
 import React, { useLayoutEffect, useEffect, useRef, useState } from 'react';
-import { motion, animate, useMotionValue, useTransform } from 'motion/react';
+import { motion, animate, useMotionValue, useTransform, useReducedMotion } from 'motion/react';
 import {
   Heart,
   X,
@@ -7,7 +7,9 @@ import {
   MapPin,
   RotateCcw,
   Coins,
-  Maximize2
+  Maximize2,
+  ArrowLeft,
+  ArrowRight
 } from 'lucide-react';
 import { UserProfile } from '../../types';
 import { VerifiedMark } from '../common/VerifiedMark';
@@ -24,6 +26,11 @@ interface DiscoverScreenProps {
   nextProfile?: UserProfile | undefined;
   /** Current credit balance shown in the top bar (KB §18E). */
   credits?: number;
+  /** Notification bell, owned by the shell. */
+  headerAction?: React.ReactNode;
+  /** First-run teaching overlay: how the deck works. */
+  showSwipeHint?: boolean;
+  onDismissSwipeHint?: () => void;
   onSwipeLeft: (profile: UserProfile) => void;
   onSwipeRight: (profile: UserProfile) => void;
   onOpenProfile: (profile: UserProfile) => void;
@@ -36,6 +43,9 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
   currentProfile,
   nextProfile,
   credits,
+  headerAction,
+  showSwipeHint,
+  onDismissSwipeHint,
   onSwipeLeft,
   onSwipeRight,
   onOpenProfile,
@@ -43,6 +53,7 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
   onOpenStore,
   onResetDeck
 }) => {
+  const reduceMotion = useReducedMotion();
   const [exitDirection, setExitDirection] = useState<'left' | 'right' | null>(null);
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
   const [headerHidden, setHeaderHidden] = useState(false);
@@ -201,7 +212,7 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
         aria-hidden={headerHidden}
         data-discover-header
       >
-        <h1 className="t-title">Discover</h1>
+        <h1 className="t-title">Swipe</h1>
         <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
@@ -222,6 +233,7 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
           >
             <SlidersHorizontal className="h-5 w-5" />
           </button>
+          {headerAction}
         </div>
       </motion.div>
 
@@ -401,6 +413,63 @@ export const DiscoverScreen: React.FC<DiscoverScreenProps> = ({
                 Refresh
               </button>
             </motion.div>
+        )}
+
+        {/* First-run teaching: a ghost card performs the gesture once, then the
+            overlay explains it in words. It never blocks the real card, and it
+            retires itself the moment the member makes a decision. */}
+        {showSwipeHint && currentProfile && (
+          <div className="pointer-events-none absolute inset-0 z-40 overflow-hidden rounded-[1.75rem]">
+            <div className="absolute inset-0 bg-black/55 backdrop-blur-[1.5px]" />
+            <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center">
+              <motion.div
+                className="relative h-36 w-26 overflow-hidden rounded-2xl border border-white/55 bg-white/25 shadow-[0_18px_40px_-18px_rgba(0,0,0,0.7)] backdrop-blur-md"
+                animate={reduceMotion ? undefined : { x: [0, 66, 0, -66, 0], rotate: [0, 7, 0, -7, 0] }}
+                transition={{ duration: 4.2, times: [0, 0.2, 0.5, 0.7, 1], repeat: Infinity, repeatDelay: 0.5, ease: 'easeInOut' }}
+              >
+                <motion.span
+                  className="absolute -top-2 right-2 rotate-[-8deg] rounded-md border border-emerald-300/90 px-1.5 py-0.5 text-[0.5625rem] font-extrabold uppercase tracking-[0.18em] text-emerald-200"
+                  animate={reduceMotion ? { opacity: 1 } : { opacity: [0, 1, 0, 0, 0] }}
+                  transition={{ duration: 4.2, times: [0, 0.2, 0.42, 0.7, 1], repeat: Infinity, repeatDelay: 0.5 }}
+                >
+                  Like
+                </motion.span>
+                <motion.span
+                  className="absolute -top-2 left-2 rotate-[8deg] rounded-md border border-rose-300/90 px-1.5 py-0.5 text-[0.5625rem] font-extrabold uppercase tracking-[0.18em] text-rose-200"
+                  animate={reduceMotion ? { opacity: 1 } : { opacity: [0, 0, 0, 1, 0] }}
+                  transition={{ duration: 4.2, times: [0, 0.3, 0.52, 0.7, 1], repeat: Infinity, repeatDelay: 0.5 }}
+                >
+                  Pass
+                </motion.span>
+                <span className="absolute inset-x-3 bottom-4 h-1.5 rounded-full bg-white/30" />
+                <span className="absolute inset-x-5 bottom-8 h-1.5 rounded-full bg-white/20" />
+              </motion.div>
+
+              <div className="mt-6 flex items-center gap-5 text-white">
+                <span className="flex items-center gap-1.5 text-[0.6875rem] font-bold uppercase tracking-[0.14em] text-rose-200">
+                  <ArrowLeft className="h-3.5 w-3.5" /> Pass
+                </span>
+                <span className="flex items-center gap-1.5 text-[0.6875rem] font-bold uppercase tracking-[0.14em] text-emerald-200">
+                  Like <ArrowRight className="h-3.5 w-3.5" />
+                </span>
+              </div>
+
+              <p className="mt-3 max-w-[16rem] text-[0.8125rem] leading-snug text-white/85">
+                Drag the card right to like, left to pass — or tap the buttons below.
+              </p>
+
+              {/* Themed control on purpose: a literal white pill keeps its white
+                  fill in dark mode while the remapped ink goes near-white, which
+                  made the label disappear. */}
+              <button
+                type="button"
+                onClick={onDismissSwipeHint}
+                className="btn btn-primary btn-sm pointer-events-auto mt-4"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
         )}
       </div>
 

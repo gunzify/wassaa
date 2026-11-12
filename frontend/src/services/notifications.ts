@@ -2,11 +2,15 @@ import { readSession, getAccessToken, supabaseApiKey } from './supabase-auth';
 
 const BASE_URL = `${import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, '') || ''}/functions/v1/api`;
 
+export type NotificationKind = 'match' | 'message' | 'like' | 'system';
+
 export interface UserNotificationSummary {
   id: string;
-  kind: 'match' | 'message' | 'like';
+  kind: NotificationKind;
   actorId: string;
   actorName: string;
+  /** First profile photo of the actor, when there is one. */
+  actorPhoto?: string;
   threadId?: string;
   messagePreview?: string;
   createdAt: string;
@@ -27,7 +31,7 @@ export interface UserNotificationList {
   offset: number;
 }
 
-export type NotificationKindFilter = 'match' | 'message' | 'like' | undefined;
+export type NotificationKindFilter = NotificationKind | undefined;
 
 export interface UserNotificationPreferences {
   message: boolean;
@@ -120,7 +124,8 @@ export async function unmuteThread(threadId: string): Promise<{ muting: boolean 
 export async function fetchMutedThreads(): Promise<Array<{ threadId: string; mutedAt: string; partnerName: string }>> {
   const token = await getAccessToken();
   if (!token) throw new Error('Sign in to view muted conversations.');
-  return fetchJson(`${BASE_URL}/notifications/muted-threads`);
+  const res = await fetchJson<{ muted?: Array<{ threadId: string; mutedAt: string; partnerName: string }> }>(`${BASE_URL}/notifications/muted-threads`);
+  return Array.isArray(res?.muted) ? res.muted : [];
 }
 
 // ---- low-level helper ----

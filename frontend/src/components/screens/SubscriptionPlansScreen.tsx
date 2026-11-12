@@ -1,5 +1,5 @@
 import React from 'react';
-import { Coins, X, Zap, MessageCircle, Gift, TrendingUp, ShieldCheck } from 'lucide-react';
+import { Coins, X, Zap, Gift, TrendingUp } from 'lucide-react';
 import { CreditPack } from '../../types';
 import { packChargeNote, packPriceLabel } from '../../lib/money';
 
@@ -64,17 +64,9 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
       </div>
 
       <>
-        <div className="bg-white border border-[#E8E4DC] rounded-2xl p-4 mb-5 flex items-start gap-2.5 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
-          <ShieldCheck className="w-4 h-4 text-[#B85A3C] mt-0.5 shrink-0" />
-          <p className="text-xs text-[#6B665F] leading-relaxed">
-            Pay with any Visa, Mastercard, Verve or Amex card, anywhere in the world. Prices are shown in your local
-            currency; the card charge is in naira and your bank converts.
-          </p>
-        </div>
           {/* How credits work */}
           <div className="bg-white border border-[#E8E4DC] rounded-2xl p-4 mb-5 space-y-2.5 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
             {[
-              { icon: MessageCircle, text: 'Texts cost 5 credits, photos 10.' },
               { icon: Gift, text: 'Replies never cost you anything — only what you send does.' },
               { icon: TrendingUp, text: `New members start with 25 free credits and ${dailyCreditAllowance} more each day.` },
             ].map(({ icon: Icon, text }) => (
@@ -89,7 +81,7 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
           <button
             type="button"
             onClick={onBoost}
-            disabled={credits < 10}
+            disabled={credits < 100}
             className="w-full text-left bg-white border border-[#E8E4DC] rounded-2xl p-4 mb-5 flex items-center justify-between hover:border-[#B85A3C] transition-colors disabled:opacity-50 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
           >
             <span className="flex items-center gap-3">
@@ -101,7 +93,7 @@ export const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = (
                 <span className="block text-xs text-[#6B665F]">Jump to the top of everyone’s deck nearby.</span>
               </span>
             </span>
-            <span className="shrink-0 text-xs font-semibold font-['Space_Mono',monospace] text-[#B85A3C] bg-[#F5EAE5] px-3 py-1.5 rounded-full border border-[#E8D5CD]">10</span>
+            <span className="shrink-0 text-xs font-semibold font-['Space_Mono',monospace] text-[#B85A3C] bg-[#F5EAE5] px-3 py-1.5 rounded-full border border-[#E8D5CD]">100</span>
           </button>
 
           {/* Packs */}

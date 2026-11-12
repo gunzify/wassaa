@@ -7,6 +7,8 @@ import { locationLine, serviceShort } from '../../lib/profile-display';
 interface MatchesListScreenProps {
   /** 'matches' = the Matches tab (matches + likes). 'messages' = the Messages tab (conversations only). */
   variant?: 'matches' | 'messages';
+  /** Notification bell, owned by the shell. */
+  headerAction?: React.ReactNode;
   matches: MatchItem[];
   likesReceived?: UserProfile[];
   canSeeLikes?: boolean;
@@ -39,6 +41,7 @@ function formatStamp(iso?: string): string {
 
 export const MatchesListScreen: React.FC<MatchesListScreenProps> = ({
   variant = 'matches',
+  headerAction,
   matches,
   likesReceived = [],
   canSeeLikes = false,
@@ -131,7 +134,7 @@ export const MatchesListScreen: React.FC<MatchesListScreenProps> = ({
             onClick={onDiscover}
             className="flex items-center gap-1 text-[0.8125rem] font-semibold text-brand"
           >
-            Discover
+            Swipe
             <ArrowRight className="h-3.5 w-3.5" />
           </button>
         )}
@@ -190,20 +193,23 @@ export const MatchesListScreen: React.FC<MatchesListScreenProps> = ({
               : 'People who have already shown interest.'}
           </p>
         </div>
-        <span className="mt-1 shrink-0 rounded-full bg-brand-tint px-3 py-1.5 text-[0.75rem] font-semibold text-brand">
-          {count}{' '}
-          {isMessages
-            ? count === 1
-              ? 'chat'
-              : 'chats'
-            : activeTab === 'matches'
-            ? count === 1
-              ? 'match'
-              : 'matches'
-            : count === 1
-            ? 'like'
-            : 'likes'}
-        </span>
+        <div className="mt-0.5 flex shrink-0 items-center gap-2">
+          <span className="rounded-full bg-brand-tint px-3 py-1.5 text-[0.75rem] font-semibold text-brand">
+            {count}{' '}
+            {isMessages
+              ? count === 1
+                ? 'chat'
+                : 'chats'
+              : activeTab === 'matches'
+              ? count === 1
+                ? 'match'
+                : 'matches'
+              : count === 1
+              ? 'like'
+              : 'likes'}
+          </span>
+          {headerAction}
+        </div>
       </div>
 
       {!isMessages && (
@@ -268,7 +274,7 @@ export const MatchesListScreen: React.FC<MatchesListScreenProps> = ({
             </p>
             {onDiscover && (
               <button type="button" onClick={onDiscover} className="btn btn-sm btn-primary mt-6">
-                Discover people
+                Start swiping
               </button>
             )}
           </div>
@@ -348,10 +354,10 @@ export const MatchesListScreen: React.FC<MatchesListScreenProps> = ({
           <p className="mt-2 max-w-[17rem] text-[0.875rem] leading-relaxed text-ink-soft">
             {activeTab === 'likes'
               ? 'When someone likes your profile, they will appear here.'
-              : 'Like someone in Discover — when they like you back, you both show up here.'}
+              : 'Like someone in Swipe — when they like you back, you both show up here.'}
           </p>
           <button type="button" onClick={onDiscover} className="btn btn-sm btn-primary mt-6">
-            Discover people
+            Start swiping
           </button>
         </div>
       )}

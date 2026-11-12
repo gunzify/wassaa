@@ -313,7 +313,7 @@ The app callback should return to the deployed SPA root (for example `https://wa
 
 - Member block is bilateral in discovery/likes/chat checks; only the blocker can remove their block. Report supports categories, details, and optional block.
 - A report creates a moderator work item but does not itself hide/block unless `alsoBlock` is selected. The admin panel can update case status and block/unblock accounts.
-- Admin block uses `profiles.blocked_us`; the active Edge API refuses blocked accounts on each authenticated request. It does not revoke Supabase Auth credentials directly.
+- Account standing is one state, not two. `profiles.blocked_us` is the legacy staff block and `profiles.account_status` is the sanction field; the API treats `blocked_us` as a synonym of `banned`, every writer sets both, and migration `20261112000000_state_invariants.sql` backfills old rows and adds the `wassaa_sync_account_standing` trigger, which normalises either spelling on write (`blocked_us` implies `banned`, and `banned` implies `blocked_us`). The Edge API refuses banned accounts on each authenticated request but still allows `/auth/session`, `/appeals` and account erasure. It does not revoke Supabase Auth credentials directly.
 - Verification badge means the identity submission was manually approved. It does not certify military/service employment, rank, or a current duty assignment.
 - The app records only a masked document number; source ID/selfie files are stored in private R2 until a moderator decision, then deleted and DB references nulled.
 - Admin access in the active console is Google sign-in followed by an explicit `wassaa_admin_users` allowlist lookup server-side. There is no browser-supplied admin key. The old Express admin uses `ADMIN_API_KEY` and is legacy-only.
@@ -585,7 +585,7 @@ Decisions (profit + retention, one currency, no tier/credit mix):
 
 **Implemented in source; static checks pass, live verification below:**
 
-- Edge API (`index.ts` + `npc.ts` + `npc-content.ts`): lazy NPC engine on `/matches` and `/matches/:id/messages`, atomic spend + insert + reply-window in `wassaa_send_message`, daily drip on `/auth/session`, Super Like 3 / Boost 10 / reveal 15, credit-pack checkout and fulfillment, sanction gate (`ACCOUNT_BANNED` / `ACCOUNT_RESTRICTED`), appeals, report evidence, and admin queue/context/sanction/appeal/NPC/thread routes.
+- Edge API (`index.ts` + `npc.ts` + `npc-content.ts`): lazy NPC engine on `/matches` and `/matches/:id/messages`, atomic spend + insert + reply-window in `wassaa_send_message`, daily drip on `/auth/session`, paid extra swipe 1 / Boost 100 / reveal 15 (Super Like was removed), credit-pack checkout and fulfillment, sanction gate (`ACCOUNT_BANNED` / `ACCOUNT_RESTRICTED`), appeals, report evidence, and admin queue/context/sanction/appeal/NPC/thread routes.
 - Frontend: onboarding officer/soldier + skill pickers, chat credit hint, credit store, locked-likes reveal, appeal screen + restriction banner, hold-to-report, and the identity step as the **final step of onboarding** (opt-in) plus the Settings entry point — both mount `components/common/IdentityCapturePanel` (2026-10-27).
 - Root `npm run typecheck` passes (backend + frontend); `npm run build` passes (existing ~510 kB chunk warning); `node scripts/check-edge.mjs` parses all four Edge modules.
 
@@ -1069,3 +1069,126 @@ S3 endpoint, Google and PostHog are the only permitted `connect-src` origins.
   one row per event). `scripts/check-edge.mjs` now also runs
   `tsc -p scripts/tsconfig.edge.json`, so a missing export fails the check
   instead of the deploy.
+
+## Notifications, credit copy, and the curated persona set (2026-11-10)
+
+### Notifications moved out of the dock
+- The dock is back to five destinations (Swipe, Explore, Matches, Messages,
+  Profile). The bell is `frontend/src/components/common/NotificationBell.tsx`,
+  rendered in each tab header, with an unread count and a gentle swing while
+  something is waiting.
+- `App.tsx` polls `GET /notifications?unreadOnly=1&limit=1` for the badge on
+  focus and every 60 seconds, and the full feed is a route (`showTabs` still
+  lists it so the dock does not jump when it opens).
+- Events are written by database triggers, not by API code
+  (`20261108000000_notification_wiring.sql`): a match, a first message in a
+  thread, and a like each create a `notification_events` row. Cold threads do
+  not create a match event; promoting cold -> match does. Persona recipients,
+  muted threads and `profiles.notifications` prefs are honoured.
+- The feed reads `notification_summaries` with the service role
+  (`supabase/functions/api/notifications.ts`) so `unreadOnly`, kind filters and
+  the exact unread count are ordinary queries. Read state is one row per event
+  because the `notification_reads` primary key is `(user_id, notification_id)`.
+- Admins are auth users in `wassaa_admin_users`, not profiles, so they cannot
+  own events. The console bell uses `GET /admin/activity` (pending
+  verifications, open reports, pending appeals, newest members) and
+  `POST /admin/notifications/deliver` writes a one-off row with
+  `actor_id = null`.
+
+### Chat and credit copy
+- Removed the per-message pricing explainer from the chat composer
+  ("Text 5 · Photo 10 ... not-yet-matched"). The free-chat notice and the
+  out-of-credits link remain.
+- Removed the "pay with any card" block and the "texts cost 5 credits" line
+  from the credit store. Boost is now 100 credits for one hour, enforced by
+  `PRICING.boost` in `supabase/functions/api/index.ts` and mirrored in the
+  store card.
+
+### Curated persona set (`scripts/npc-curate.mjs`)
+- **All 800 personas are paused** (`npc_active = false`). The deck is empty
+  until the curated set is edited and activated. That is deliberate: the
+  original pool had 283 distinct faces for 800 personas, so the same person
+  appeared up to 17 times.
+- 65 profiles are staged in `npc.curated` (20 Nigeria, 15 US, three each in
+  GB, CA, AU, DE, BR, IT, ZA, FR, IE and ES), every one paused. The console
+  overview has a **Curated set** card that opens Personas with the
+  **Curated set only** filter already applied.
+- **Console workflow:** each card has **Add to set** / **Remove from set**,
+  **Activate** / **Pause**, **Edit**, **Scripts**, **Photos** and a photo
+  quarantine toggle. Adding a persona from the paused pool to the set and
+  activating it is the incremental workflow; nothing needs a script rerun.
+- **Photo upload** clears an automated quarantine flag on that persona, because a
+  human chose the face. For a curated persona it leaves `npc_active` alone, so
+  editing a staged profile cannot push it live by accident; **Activate** is the
+  explicit step. Pool (uncurated) personas still activate on upload.
+- **Activation refuses a persona with no human-chosen face** (`409`): a
+  quarantined photo, `npc.photoState = 'awaiting_upload'`, or an empty photo
+  list all hide the persona from the deck even when the row says active. The
+  console would otherwise show "Active" on someone members can never see.
+- The script's `--activate` holds back any pick whose face a reviewer flagged
+  anywhere in the pool, not just the pick's own row. `--reset-curated` clears the
+  flag from profiles no longer in the run's picks; it is opt-in because it also
+  clears profiles added by hand in the console.
+- Picks enforce: complete bio/prompts/interests, a face used by no other pick,
+  unique first names inside a group, at most two per city, gender balance, no
+  city/state agency mismatch (`NYPD` in Phoenix, `Texas DPS` in Philadelphia),
+  no sailor in a landlocked city, and no bio that names a different agency than
+  the profile serves in.
+- The old Nigerian seed wrote a rank into `profession_title` (an Air Force
+  officer "serving" as Inspector of Police). The script reads the real trade
+  from the bio and rewrites `profession_title`/`skill` for the NG picks; `rank`
+  stays null because the product never shows rank.
+- **Photo limit:** the black-male pool has 11 files and 10 of them are already
+  flagged, so 9 of the 20 Nigerian picks use a face flagged somewhere in the
+  pool (5 of those rows are directly quarantined). Only one usable male face
+  exists. Fresh, licensed photos are the real fix; the script prints
+  `[PHOTO FLAGGED]` for every file that needs replacing.
+- Re-run with `--apply` to re-stage (deterministic), or `--apply --activate`
+  to put the photo-clean picks live immediately.
+
+### State invariants (2026-11-12)
+
+A state audit found places where one product state was stored twice, or where a
+transition took several writes that could stop halfway. Migration
+`20261112000000_state_invariants.sql` plus the matching API edits make one
+owner per state:
+
+- **Account standing.** `blocked_us` and `account_status` are now one rung
+  (`blocked_us` mirrors `banned`). Report-block, sanction and appeal-grant all
+  write both; `ban -> restrict` is refused (`409`) because a restriction is not
+  a downgrade of a ban. The database backfills old rows and a trigger
+  (`wassaa_sync_account_standing`) normalises the half-state on write instead
+  of rejecting it, so a legacy console or a script that writes one column still
+  lands in the combined state. `ACCOUNT_BANNED` /
+  `ACCOUNT_RESTRICTED` responses move the client to the appeal screen/banner,
+  and `/me/account` stays reachable after a ban.
+- **Persona visibility.** Discovery, likes, passes-to-message, cold opens and
+  the send/reply RPCs all use the same predicate: a persona is reachable only
+  when `npc_active`, `npc_photo_review <> 'quarantine'` and
+  `coalesce(npc->>'photoState','ready') <> 'awaiting_upload'`. A stale card can
+  no longer be liked or messaged. Admin activation refuses a persona with no
+  human-chosen photo (`409`).
+- **Sending.** `wassaa_send_message` checks the partner before spending: banned,
+  erased or unreachable personas return `unavailable` (mapped to `403`), except
+  an `admin_owned` thread, which is staff-operated and survives a persona pause.
+  Persona pricing now follows the participant type, so pausing a persona no
+  longer drops a warm thread to cold pricing and the three-message cap.
+- **Boost** is `wassaa_start_boost(uuid, integer)`: advisory lock, spend, extend
+  from a fresh timestamp and write in one transaction. Concurrent taps cannot
+  charge twice for one hour, and a failed write cannot keep the credits.
+- **Reveal likes** is `wassaa_reveal_likes(uuid, integer)`: lock, 24h window
+  check, spend and stamp together; a second tap inside the window is a no-op.
+- **Paid swipe.** The ledger check constraint now allows `extra_swipe`; before
+  this migration every attempt raised a check violation and the member was told
+  they had no credits.
+- **Verification review** reverts the submission to `pending` if the profile
+  update fails, so the queue cannot lose the case. Appeal grants do the same.
+- **NPC engine windows** are restored when a reply fails, so a transient AI/DB
+  error does not leave the thread `active` with no due time. An opener that
+  cannot be written releases the claimed thread.
+- **Location.** Clearing the device location and its distance limit is one
+  update; the old two-step write could leave a radius with no coordinates,
+  which made discovery match nothing.
+- **Report + block** writes the block before the report; the member is never
+  told "reported and blocked" when the block row is missing.
+

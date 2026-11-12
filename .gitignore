@@ -16,3 +16,4 @@ coverage/
 
 .vercel
 .env*.local
+legal/site/

@@ -438,15 +438,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
               >
                 <Coins className="h-3.5 w-3.5" /> You are out of credits — tap to top up
               </button>
-            ) : (
-              <p className="flex items-center gap-1.5 px-4 pt-2.5 text-[0.75rem] text-ink-muted">
-                <Coins className="h-3.5 w-3.5" /> Text {pricing.text} · Photo {pricing.photo} credits
-                {pricing.coldBase && pricing.coldStep && pricing.coldMax
-                  ? ` · not-yet-matched: ${pricing.coldBase}, +${pricing.coldStep} each, max ${pricing.coldMax}`
-                  : ''}
-                {typeof credits === 'number' ? ` · ${credits} left` : ''}
-              </p>
-            )}
+            ) : null}
 
             <div className="flex items-center gap-2 p-3">
               <input

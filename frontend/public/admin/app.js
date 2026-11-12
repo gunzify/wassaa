@@ -179,11 +179,11 @@
   $('#threads-paid').addEventListener('change', loadThreads);
   $('#npc-search-btn').addEventListener('click', function () { loadNpcs(true); });
   $('#npc-search').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadNpcs(true); });
-  ['#npc-country', '#npc-class', '#npc-service', '#npc-gender', '#npc-active'].forEach(function (sel) {
+  ['#npc-country', '#npc-class', '#npc-service', '#npc-gender', '#npc-active', '#npc-curated'].forEach(function (sel) {
     $(sel).addEventListener('change', function () { loadNpcs(true); });
   });
   $('#npc-clear').addEventListener('click', function () {
-    ['#npc-search', '#npc-country', '#npc-class', '#npc-service', '#npc-gender', '#npc-active'].forEach(function (sel) { $(sel).value = ''; });
+    ['#npc-search', '#npc-country', '#npc-class', '#npc-service', '#npc-gender', '#npc-active', '#npc-curated'].forEach(function (sel) { $(sel).value = ''; });
     loadNpcs(true);
   });
   $('#npc-more').addEventListener('click', function () { loadNpcs(false); });
@@ -219,14 +219,18 @@
       { key: 'threads', label: 'Team threads', value: o.adminOwnedThreads, alert: false },
       { key: 'threads', label: 'Paid members', value: o.paidMembers, alert: false },
       { key: 'npcs', label: 'Personas', value: o.personas, alert: false },
+      { key: 'npcs', label: 'Curated set', value: o.curatedPersonas, alert: false, curated: true },
       { key: 'npcs', label: 'Active personas', value: o.activePersonas, alert: false }
     ];
     box.innerHTML = cards.map(function (c) {
-      return '<button type="button" class="card' + (c.alert ? ' alert' : '') + '" data-goto="' + c.key + '">' +
+      return '<button type="button" class="card' + (c.alert ? ' alert' : '') + '" data-goto="' + c.key + '"' + (c.curated ? ' data-curated="1"' : '') + '>' +
         '<b>' + esc(c.value == null ? '—' : c.value) + '</b><span>' + esc(c.label) + '</span></button>';
     }).join('');
     box.querySelectorAll('[data-goto]').forEach(function (card) {
       card.addEventListener('click', function () {
+        // The curated card is the one click that should also narrow the list,
+        // so it arrives showing the shortlist rather than the whole 800-row pool.
+        if (card.hasAttribute('data-curated')) $('#npc-curated').value = '1';
         var tab = document.querySelector('.tab[data-tab="' + card.getAttribute('data-goto') + '"]');
         if (tab) tab.click();
       });
@@ -324,6 +328,7 @@
     push('service', '#npc-service');
     push('gender', '#npc-gender');
     push('active', '#npc-active');
+    push('curated', '#npc-curated');
     params.push('limit=60');
     params.push('offset=' + offset);
     return '/npcs?' + params.join('&');
@@ -512,13 +517,14 @@
     // persona; it stays out of discovery until a photo is uploaded.
     var needsPhoto = persona.photoState === 'awaiting_upload';
     var quarantined = n.photoReview === 'quarantine';
+    var curated = n.curated || Boolean(persona.curated);
     return (
       '<article class="npc" data-npc="' + esc(n.id) + '">' +
         '<div class="cover">' + (photo
           ? '<img src="' + esc(photo) + '" alt="" data-zoom="' + esc(photo) + '" />'
           : '<div class="none">No photo</div>') + '</div>' +
         '<div class="body">' +
-          '<strong>' + esc(n.name) + (n.active ? '' : ' <span class="badge">paused</span>') + (needsPhoto ? ' <span class="badge">needs photo</span>' : '') + (quarantined ? ' <span class="badge">quarantined</span>' : '') + (n.aiEnabled ? ' <span class="badge">AI</span>' : '') + '</strong>' +
+          '<strong>' + esc(n.name) + (curated ? ' <span class="badge">curated</span>' : '') + (n.active ? '' : ' <span class="badge">paused</span>') + (needsPhoto ? ' <span class="badge">needs photo</span>' : '') + (quarantined ? ' <span class="badge">quarantined</span>' : '') + (n.aiEnabled ? ' <span class="badge">AI</span>' : '') + '</strong>' +
           '<span class="meta">' + esc(n.age || '—') + ' · ' + esc([n.city, n.state].filter(Boolean).join(', ')) + '</span>' +
           '<span class="flagline">' + flags.map(function (f) { return '<span class="badge">' + esc(f) + '</span>'; }).join('') + '</span>' +
           '<span>' + esc([n.service, n.orgRole, n.skill].filter(Boolean).join(' · ') || n.professionCategory || '') + '</span>' +
@@ -528,6 +534,7 @@
             '<button class="btn" data-action="npc-edit" type="button">Edit</button>' +
             '<button class="btn" data-action="npc-scripts" type="button">Scripts</button>' +
             '<button class="btn" data-action="npc-photos" type="button">Photos</button>' +
+            '<button class="btn" data-action="npc-curate" type="button">' + (curated ? 'Remove from set' : 'Add to set') + '</button>' +
             '<button class="btn ' + (n.active ? 'reject' : 'approve') + '" data-action="npc-toggle" type="button">' + (n.active ? 'Pause' : 'Activate') + '</button>' +
             '<button class="btn" data-action="npc-quarantine" type="button">' + (quarantined ? 'Release photo' : 'Quarantine photo') + '</button>' +
           '</div>' +
@@ -819,6 +826,7 @@
       selectField('verificationStatus', 'Verification', n.verificationStatus, [['verified', 'Verified — seal shown'], ['pending', 'Pending review'], ['not_started', 'Not verified']]) +
       '<div class="decision" style="padding:8px 18px;gap:12px">' +
         '<label style="font-size:12px"><input type="checkbox" id="npc-greeter" ' + (n.persona && n.persona.greeter ? 'checked' : '' ) + ' /> Greeter (proactively messages new matches)</label>' +
+        '<label style="font-size:12px"><input type="checkbox" id="npc-curated" ' + (n.curated || (n.persona && n.persona.curated) ? 'checked' : '') + ' /> In curated set (hand-vetted shortlist)</label>' +
         '<label style="font-size:12px"><input type="checkbox" id="npc-active" ' + (n.active ? 'checked' : '') + ' /> Active in discovery</label>' +
         '<label style="font-size:12px"><input type="checkbox" id="npc-ai" ' + (n.aiEnabled ? 'checked' : '') + ' /> AI replies (falls back to the messages above if the AI is unavailable)</label>' +
         (n.photoReview === 'quarantine'
@@ -920,6 +928,7 @@
             familyPlans: value('familyPlans')
           },
           persona: persona,
+          curated: sheet.querySelector('#npc-curated').checked,
           active: sheet.querySelector('#npc-active').checked,
           aiEnabled: sheet.querySelector('#npc-ai').checked
         }
@@ -1168,6 +1177,24 @@
       if (button.dataset.action === 'npc-edit') { editNpc(npc.dataset.npc); return; }
       if (button.dataset.action === 'npc-scripts') { editNpcScripts(npc.dataset.npc); return; }
       if (button.dataset.action === 'npc-photos') { editNpcPhotos(npc.dataset.npc); return; }
+      if (button.dataset.action === 'npc-curate') {
+        var personaRecord = state.npcs.find(function (x) { return x.id === npc.dataset.npc; });
+        var inSet = !(personaRecord && (personaRecord.curated || (personaRecord.persona || {}).curated));
+        button.disabled = true;
+        api('/npcs/' + encodeURIComponent(npc.dataset.npc), { method: 'PATCH', body: { curated: inSet } })
+          .then(function () {
+            if (personaRecord) {
+              personaRecord.curated = inSet;
+              personaRecord.persona = Object.assign({}, personaRecord.persona || {});
+              if (inSet) personaRecord.persona.curated = true;
+              else delete personaRecord.persona.curated;
+            }
+            replaceNpcCard(npc.dataset.npc);
+            toast(inSet ? 'Added to the curated set' : 'Removed from the curated set');
+          })
+          .catch(function (err) { button.disabled = false; toast(err.message, true); });
+        return;
+      }
       if (button.dataset.action === 'npc-toggle') {
         var record = state.npcs.find(function (x) { return x.id === npc.dataset.npc; });
         var next = !(record && record.active);

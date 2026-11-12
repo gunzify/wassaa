@@ -22,6 +22,8 @@ import {
   Sliders, 
   AlertTriangle,
   ExternalLink,
+  FileText,
+  Bot,
   ChevronLeft,
   Calendar,
   Layers,
@@ -52,6 +54,7 @@ import { ORG_ROLES, skillsForCategory, isUniformedCategory } from '../../constan
 import { VerifiedMark } from '../common/VerifiedMark';
 import { PhotoViewer } from '../common/PhotoViewer';
 import { affiliationLine, locationLine, serviceLine } from '../../lib/profile-display';
+import { LEGAL_LINKS, LEGAL_LINK_PROPS } from '../../constants/legal';
 
 interface BlockedItem {
   id: string;
@@ -78,6 +81,8 @@ interface SettingsPrivacyScreenProps {
   onOpenIdentityVerify?: () => void;
   /** Which half of the split screen the shell is rendering. */
   view?: 'profile' | 'settings';
+  /** Notification bell, owned by the shell. */
+  headerAction?: React.ReactNode;
   /** Profile header gear → settings. */
   onOpenSettings?: () => void;
   /** Settings header back → profile. */
@@ -107,6 +112,7 @@ export const SettingsPrivacyScreen: React.FC<SettingsPrivacyScreenProps> = ({
   onLogOut,
   onVerifyPhone,
   onOpenIdentityVerify,
+  headerAction,
   view = 'profile',
   onOpenSettings,
   onBackToProfile
@@ -341,28 +347,31 @@ export const SettingsPrivacyScreen: React.FC<SettingsPrivacyScreenProps> = ({
             </p>
           </div>
         </div>
-        {view === 'profile' && (
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowPreviewModal(true)}
-              className="icon-btn icon-btn-ghost"
-              aria-label="Preview my profile card"
-              title="Preview my profile card"
-            >
-              <Eye className="w-5 h-5" />
-            </button>
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="icon-btn icon-btn-ghost"
-              aria-label="Open settings"
-              title="Settings"
-            >
-              <Settings className="w-5 h-5" />
-            </button>
-          </div>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {view === 'profile' && (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowPreviewModal(true)}
+                className="icon-btn icon-btn-ghost"
+                aria-label="Preview my profile card"
+                title="Preview my profile card"
+              >
+                <Eye className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="icon-btn icon-btn-ghost"
+                aria-label="Open settings"
+                title="Settings"
+              >
+                <Settings className="w-5 h-5" />
+              </button>
+            </>
+          )}
+          {headerAction}
+        </div>
       </header>
 
       {view === 'profile' && (
@@ -1025,6 +1034,46 @@ export const SettingsPrivacyScreen: React.FC<SettingsPrivacyScreenProps> = ({
             </span>
             <ChevronRight className="w-5 h-5 shrink-0 opacity-60" />
           </button>
+        </div>
+      </section>
+
+      {/* ---- Legal ------------------------------------------------------- */}
+      <section className="mt-6">
+        <h2 className="t-section mb-2 px-1">Legal</h2>
+
+        <div className="card card-flush">
+          <a className="row" href={LEGAL_LINKS.terms.href} {...LEGAL_LINK_PROPS}>
+            <span className="row-icon">
+              <FileText className="w-4 h-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="row-title block">Terms of Service</span>
+              <span className="row-sub block">The agreement for using WASSAA</span>
+            </span>
+            <ExternalLink className="w-4 h-4 text-[#9C958D] shrink-0" />
+          </a>
+
+          <a className="row" href={LEGAL_LINKS.privacy.href} {...LEGAL_LINK_PROPS}>
+            <span className="row-icon">
+              <Lock className="w-4 h-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="row-title block">Privacy Policy</span>
+              <span className="row-sub block">What we collect, why, and your rights</span>
+            </span>
+            <ExternalLink className="w-4 h-4 text-[#9C958D] shrink-0" />
+          </a>
+
+          <a className="row" href={LEGAL_LINKS.automatedProfiles.href} {...LEGAL_LINK_PROPS}>
+            <span className="row-icon">
+              <Bot className="w-4 h-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="row-title block">Automated profiles</span>
+              <span className="row-sub block">Which profiles are not real people</span>
+            </span>
+            <ExternalLink className="w-4 h-4 text-[#9C958D] shrink-0" />
+          </a>
         </div>
       </section>
         </>

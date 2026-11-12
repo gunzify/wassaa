@@ -2,6 +2,7 @@ import React from 'react';
 import { ChevronLeft, Mail, ShieldCheck } from 'lucide-react';
 import { WassaaLogo } from '../common/WassaaLogo';
 import { GoogleSignInButton, googleSignInConfigured } from '../common/GoogleSignInButton';
+import { LEGAL_LINKS, LEGAL_LINK_PROPS } from '../../constants/legal';
 
 interface SignUpScreenProps {
   onBack: () => void;
@@ -44,6 +45,37 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onBack, onContinueEm
         <Mail className="w-[18px] h-[18px]" />
         Continue with email
       </button>
+
+      {/* Acceptance point: continuing from here (or the Google button below)
+          creates the account, so the policies are linked at the point of
+          consent rather than only inside settings. */}
+      <p className="mt-3 text-center text-[0.8125rem] leading-relaxed text-[#6B665F]">
+        By continuing you agree to our{' '}
+        <a
+          href={LEGAL_LINKS.terms.href}
+          {...LEGAL_LINK_PROPS}
+          className="font-semibold text-[#B85A3C] underline underline-offset-2 hover:text-[#A04E33]"
+        >
+          Terms of Service
+        </a>{' '}
+        and confirm you have read our{' '}
+        <a
+          href={LEGAL_LINKS.privacy.href}
+          {...LEGAL_LINK_PROPS}
+          className="font-semibold text-[#B85A3C] underline underline-offset-2 hover:text-[#A04E33]"
+        >
+          Privacy Policy
+        </a>
+        . Some profiles are automated —{' '}
+        <a
+          href={LEGAL_LINKS.automatedProfiles.href}
+          {...LEGAL_LINK_PROPS}
+          className="font-semibold text-[#B85A3C] underline underline-offset-2 hover:text-[#A04E33]"
+        >
+          how that works
+        </a>
+        .
+      </p>
 
       {googleSignInConfigured && (
         <>

@@ -146,7 +146,7 @@
         </section>
 
         <section id="panel-npcs" class="panel hidden">
-          <p class="hint">The persona pool real members swipe and match with. Edit biographies, pause a persona from discovery, or upload a photo (stored in R2).</p>
+          <p class="hint">The persona pool real members swipe and match with. <strong>Add to set</strong> pulls a persona into the hand-vetted shortlist, <strong>Activate</strong> puts it in front of members, and <strong>Pause</strong> takes it out. Filter by <strong>Curated set</strong> to see just the shortlist.</p>
           <div class="toolbar">
             <input id="npc-search" type="search" placeholder="Search by name…" />
             <select id="npc-country"><option value="">All countries</option></select>
@@ -167,6 +167,10 @@
               <option value="">Active + paused</option>
               <option value="1">Active only</option>
               <option value="0">Paused only</option>
+            </select>
+            <select id="npc-curated">
+              <option value="">All personas</option>
+              <option value="1">Curated set only</option>
             </select>
             <button id="npc-search-btn" class="btn" type="button">Apply</button>
             <button id="npc-clear" class="btn ghost" type="button">Clear</button>

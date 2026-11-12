@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Bell } from 'lucide-react';
 import { NotificationsScreen } from './components/screens/NotificationsScreen';
-import { fetchNotifications, type UserNotificationSummary } from './services/notifications';
+import { NotificationBell } from './components/common/NotificationBell';
+import { fetchNotifications, markThreadRead } from './services/notifications';
 import {
-  Home,
   Heart,
   MessageSquare,
   User,
@@ -11,6 +10,7 @@ import {
   ChevronLeft,
   ShieldAlert,
   Compass,
+  Layers,
 } from 'lucide-react';
 import { SplashScreen } from './components/screens/SplashScreen';
 import { SignUpScreen } from './components/screens/SignUpScreen';
@@ -82,11 +82,12 @@ export default function App() {
   const [likesReceived, setLikesReceived] = useState<UserProfile[]>([]);
   const [activeMatchId, setActiveMatchId] = useState<string>('');
   const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([]);
-  const [notifications, setNotifications] = useState<UserNotificationSummary[]>([]);
   const [notificationsUnread, setNotificationsUnread] = useState(0);
-  const [notificationsLoading, setNotificationsLoading] = useState(true);
-  const [notificationsError, setNotificationsError] = useState<string | null>(null);
-  const fetchNotificationsTimer = useRef<ReturnType<typeof setTimeout>>();
+  // Where the bell was tapped from, so the notifications screen's back button
+  // returns the member to the tab they were reading.
+  const [notificationsOrigin, setNotificationsOrigin] = useState<ScreenId>('discover');
+  // First-run teaching overlay on the deck: one gesture, shown once per member.
+  const [showSwipeHint, setShowSwipeHint] = useState(false);
   const [activeChatPartner, setActiveChatPartner] = useState<UserProfile | null>(null);
   // Which list the conversation was opened from, so Back lands where the
   // member came from (the Messages tab, the Matches list, or discovery).
@@ -131,6 +132,27 @@ export default function App() {
     if (e.code === 'CREDITS_NEEDED') {
       showToast(e.message || 'You are out of credits.');
       setCurrentScreen('subscription_plans');
+      return;
+    }
+    // A sanction applied while the app is open used to leave the member on a
+    // screen whose every action failed with a toast. Move the account machine
+    // to the state the server just reported.
+    if (e.code === 'ACCOUNT_BANNED') {
+      setCurrentUser((prev) => prev ? { ...prev, accountStatus: 'banned', restrictionReason: e.message } : prev);
+      setCurrentScreen('appeal');
+      showToast(e.message || 'This account has been banned.');
+      return;
+    }
+    if (e.code === 'ACCOUNT_RESTRICTED') {
+      setCurrentUser((prev) => prev ? { ...prev, accountStatus: 'restricted', restrictionReason: e.message } : prev);
+      showToast(e.message || 'This account is restricted.');
+      return;
+    }
+    // The server gate and the client readiness check can disagree after an
+    // edit; the server is authoritative.
+    if (e.code === 'ONBOARDING_REQUIRED') {
+      setCurrentScreen('onboarding_dating');
+      showToast(e.message || 'Complete your required profile setup.');
       return;
     }
     showToast(e.message || fallback);
@@ -343,20 +365,62 @@ export default function App() {
     } catch { /* silent */ }
   }, []);
 
-  const loadNotifications = useCallback(async () => {
-    if (!currentUser) return;
-    setNotificationsLoading(true);
-    setNotificationsError(null);
+  // ---------- Notification badge ----------
+  // One cheap poll keeps the bell honest on every screen; the notifications
+  // screen loads its own full feed when it opens.
+  const refreshNotificationBadge = useCallback(async () => {
     try {
-      const res = await fetchNotifications({ limit: 50, offset: 0 });
-      setNotifications(res.notifications);
+      const res = await fetchNotifications({ limit: 1, offset: 0, unreadOnly: true });
       setNotificationsUnread(res.unreadCount);
-    } catch (e) {
-      setNotificationsError(e instanceof Error ? e.message : 'Could not load notifications');
-    } finally {
-      setNotificationsLoading(false);
+    } catch { /* the badge keeps its last value */ }
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) { setNotificationsUnread(0); return; }
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetchNotifications({ limit: 1, offset: 0, unreadOnly: true });
+        if (!cancelled) setNotificationsUnread(res.unreadCount);
+      } catch { /* a missed poll must never surface an error */ }
+    };
+    void tick();
+    const timer = window.setInterval(tick, 30000);
+    const onVisible = () => { if (document.visibilityState === 'visible') void tick(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [currentUser?.id]);
+
+  // ---------- First-run swipe teaching ----------
+  const swipeHintKey = currentUser ? `wassaa.swipe-hint.v1.${currentUser.id}` : '';
+  useEffect(() => {
+    if (!swipeHintKey) { setShowSwipeHint(false); return; }
+    try {
+      setShowSwipeHint(window.localStorage.getItem(swipeHintKey) !== '1');
+    } catch {
+      setShowSwipeHint(false);
     }
-  }, [currentUser]);
+  }, [swipeHintKey]);
+
+  const openNotifications = useCallback(() => {
+    setNotificationsOrigin((prev) => (currentScreen === 'notifications' ? prev : currentScreen));
+    setCurrentScreen('notifications');
+  }, [currentScreen]);
+
+  const dismissSwipeHint = useCallback(() => {
+    setShowSwipeHint(false);
+    if (!swipeHintKey) return;
+    try { window.localStorage.setItem(swipeHintKey, '1'); } catch { /* private mode: show it again next launch */ }
+  }, [swipeHintKey]);
+
+  // The first real decision teaches the gesture — no need to make them dismiss it.
+  useEffect(() => {
+    if (showSwipeHint && deckIndex > 0) dismissSwipeHint();
+  }, [deckIndex, showSwipeHint, dismissSwipeHint]);
 
   // Likes are a credit feature: the endpoint reports locked+price first, and
   // only charges when we explicitly ask for the reveal.
@@ -414,31 +478,6 @@ export default function App() {
     return () => { clearInterval(t); };
   }, [currentScreen, refreshMatches]);
 
-  useEffect(() => {
-    if (currentScreen !== 'notifications' || !currentUser) return;
-    let cancelled = false;
-    setNotificationsLoading(true);
-    setNotificationsError(null);
-    (async () => {
-      try {
-        const res = await fetchNotifications({ limit: 50, offset: 0 });
-        if (cancelled) return;
-        setNotifications(res.notifications);
-        setNotificationsUnread(res.unreadCount);
-      } catch (e) {
-        if (cancelled) return;
-        setNotificationsError(e instanceof Error ? e.message : 'Could not load notifications');
-      } finally {
-        if (cancelled) return;
-        setNotificationsLoading(false);
-      }
-    })();
-    const refreshTimer = window.setTimeout(() => {
-      if (!cancelled) void loadNotifications();
-    }, 20000);
-    return () => { cancelled = true; clearTimeout(refreshTimer); };
-  }, [currentScreen, currentUser]);
-
   // Load messages and join the authorized match channel. Polling is a fallback
   // for realtime outages and a low-frequency recovery sync.
   useEffect(() => {
@@ -465,6 +504,9 @@ export default function App() {
           setActiveMessages(fresh);
           lastMessageTs.current = fresh.length ? fresh[fresh.length - 1].createdAt : undefined;
           await WassaaApi.markRead(activeMatchId).catch(() => undefined);
+          // Reading the thread also clears its bells: a badge that keeps
+          // counting a message you just read is worse than no badge.
+          void markThreadRead(activeMatchId).then(refreshNotificationBadge).catch(() => undefined);
         } else if (fresh.length) {
           setActiveMessages((prev) => {
             const have = new Set(prev.map((m) => m.id));
@@ -474,6 +516,7 @@ export default function App() {
           const newest = fresh[fresh.length - 1].createdAt;
           if (!lastMessageTs.current || Date.parse(newest) > Date.parse(lastMessageTs.current)) lastMessageTs.current = newest;
           await WassaaApi.markRead(activeMatchId).catch(() => undefined);
+          void markThreadRead(activeMatchId).then(refreshNotificationBadge).catch(() => undefined);
           void refreshMatches();
         }
       } catch { /* silent */ }
@@ -500,7 +543,7 @@ export default function App() {
     };
     pollTimer = window.setTimeout(poll, 5000);
     return () => { cancelled = true; clearTimeout(pollTimer); stopRealtime?.(); };
-  }, [currentScreen, activeMatchId, refreshMatches]);
+  }, [currentScreen, activeMatchId, refreshMatches, refreshNotificationBadge]);
 
   const activeMatch = matches.find((m) => m.id === activeMatchId);
   const chatPartner = activeChatPartner || activeMatch?.profile;
@@ -819,6 +862,12 @@ export default function App() {
   // deliberately absent: opening a DM takes the whole screen.
   const showTabs = ['discover', 'explore', 'matches_list', 'messages', 'notifications', 'settings_privacy', 'settings', 'subscription_plans'].includes(currentScreen) && currentUser;
 
+  // The bell lives in the top-right of each tab header rather than the dock:
+  // notifications are an interruption surface, not a place you visit.
+  const headerAction = currentUser ? (
+    <NotificationBell unreadCount={notificationsUnread} onClick={openNotifications} />
+  ) : undefined;
+
   // Screens that are full-bleed (no padding/centering from shell)
   const isFullBleed = ['splash', 'match_screen', 'chat', 'profile_view'].includes(currentScreen);
 
@@ -941,7 +990,7 @@ export default function App() {
                     if (await handleUpdateUser(updatedProfile)) {
                       track('onboarding_completed');
                       setCurrentScreen('discover');
-                      showToast("You're all set — fresh profiles land in Discover.");
+                      showToast("You're all set — fresh profiles land in Swipe.");
                     }
                   }}
                 />
@@ -952,6 +1001,9 @@ export default function App() {
                   currentProfile={currentDiscoverProfile}
                   nextProfile={nextDiscoverProfile}
                   credits={credits}
+                  headerAction={headerAction}
+                  showSwipeHint={showSwipeHint && Boolean(currentDiscoverProfile)}
+                  onDismissSwipeHint={dismissSwipeHint}
                   onSwipeLeft={handleSwipeLeft}
                   onSwipeRight={handleSwipeRight}
                   onOpenProfile={(profile) => openProfile(profile, 'discover')}
@@ -965,6 +1017,7 @@ export default function App() {
                 <ExploreScreen
                   profiles={exploreProfiles}
                   loading={exploreLoading}
+                  headerAction={headerAction}
                   onOpenProfile={(profile) => openProfile(profile, 'explore')}
                   onRefresh={() => void loadExplore()}
                   onOpenFilter={() => setCurrentScreen('settings')}
@@ -1023,6 +1076,7 @@ export default function App() {
 
               {currentScreen === 'matches_list' && (
                 <MatchesListScreen
+                  headerAction={headerAction}
                   matches={matches}
                   likesReceived={likesReceived}
                   canSeeLikes={!likesLocked}
@@ -1041,6 +1095,7 @@ export default function App() {
               {currentScreen === 'messages' && (
                 <MatchesListScreen
                   variant="messages"
+                  headerAction={headerAction}
                   matches={matches}
                   onSelectMatch={(id) => { setChatOrigin('messages'); void openMatch(id, undefined, 'messages'); }}
                   onDiscover={() => setCurrentScreen('discover')}
@@ -1052,6 +1107,7 @@ export default function App() {
               {(currentScreen === 'settings_privacy' || currentScreen === 'settings') && (
                 <SettingsPrivacyScreen
                   view={currentScreen === 'settings' ? 'settings' : 'profile'}
+                  headerAction={headerAction}
                   currentUser={currentUser}
                   credits={credits}
                   blockedUsersList={blockedUsers}
@@ -1090,12 +1146,9 @@ export default function App() {
                   currentUser={currentUser}
                   unreadCount={notificationsUnread}
                   onUnreadCountChange={setNotificationsUnread}
-                  onSelectNotification={(n) => {
-                    if (n.threadId) { setChatOrigin('notifications'); void openMatch(n.threadId, undefined, 'notifications'); }
-                  }}
-                  onSelectThread={(threadId) => { setChatOrigin('notifications'); void openMatch(threadId, undefined, 'notifications'); }}
-                  onSelectActor={(actorId) => { void openProfile({ id: actorId, name: '', photos: [] } as UserProfile, 'notifications'); }}
-                  onBack={() => setCurrentScreen('discover')}
+                  onOpenThread={(threadId) => { setChatOrigin('notifications'); void openMatch(threadId, undefined, 'notifications'); }}
+                  onOpenProfile={(actorId) => { void openProfile({ id: actorId, name: '', photos: [] } as UserProfile, 'notifications'); }}
+                  onBack={() => setCurrentScreen(notificationsOrigin)}
                 />
               )}
               {currentScreen === 'subscription_plans' && (
@@ -1129,11 +1182,11 @@ export default function App() {
         <nav className="dock" aria-label="Primary">
           <div className="dock-inner">
             {([
-              { id: 'discover' as ScreenId, icon: Home, label: 'Discover' },
+              { id: 'discover' as ScreenId, icon: Layers, label: 'Swipe' },
               { id: 'explore' as ScreenId, icon: Compass, label: 'Explore' },
               { id: 'matches_list' as ScreenId, icon: Heart, label: 'Matches' },
-              { id: 'messages' as ScreenId, icon: MessageSquare, label: 'Messages' },              {id: 'notifications' as ScreenId, icon: Bell, label: 'Notifications'},
-              {id: 'settings_privacy' as ScreenId, icon: User, label: 'Profile'},
+              { id: 'messages' as ScreenId, icon: MessageSquare, label: 'Messages' },
+              { id: 'settings_privacy' as ScreenId, icon: User, label: 'Profile' },
             ] as const).map(({ id, icon: Icon, label }) => {
               const isActive = currentScreen === id ||
                 (id === 'discover' && currentScreen === 'profile_view' && profileOrigin === 'discover') ||
@@ -1141,7 +1194,7 @@ export default function App() {
                 (id === 'messages' && currentScreen === 'chat') ||
                 (id === 'settings_privacy' &&
                   ['settings', 'phone_verify'].includes(currentScreen)) ||
-                (id === 'notifications' && ['notifications'].includes(currentScreen));
+                (currentScreen === 'notifications' && id === notificationsOrigin);
               return (
                 <button
                   key={id}

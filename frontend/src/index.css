@@ -61,6 +61,15 @@
   to { opacity: 1; scale: 1; }
 }
 
+@keyframes bell-swing {
+  0%, 74%, 100% { rotate: 0deg; }
+  78% { rotate: 11deg; }
+  82% { rotate: -9deg; }
+  86% { rotate: 6deg; }
+  90% { rotate: -3deg; }
+  94% { rotate: 0deg; }
+}
+
 @layer base {
   :root {
     color-scheme: light;
@@ -318,6 +327,43 @@
     box-shadow: var(--shadow-subtle);
   }
 
+  /* ---- Notification bell ------------------------------------------------ */
+  /* Sits in every tab header. The swing is slow and mostly still: a badge
+     should catch the eye, not tap it on the shoulder every second. */
+  .bell {
+    position: relative;
+  }
+
+  .bell-unread {
+    color: var(--color-brand);
+  }
+
+  .bell-swing {
+    transform-origin: 50% 6%;
+    animation: bell-swing 3.6s cubic-bezier(0.36, 0.07, 0.19, 0.97) infinite;
+  }
+
+  .bell-badge {
+    position: absolute;
+    top: -0.1875rem;
+    right: -0.1875rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.125rem;
+    height: 1.125rem;
+    padding: 0 0.25rem;
+    border-radius: 9999px;
+    background: var(--color-brand);
+    color: #fff;
+    font-size: 0.625rem;
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    box-shadow: 0 0 0 2px var(--color-surface);
+    animation: var(--animate-pop);
+  }
+
   /* ---- Cards & rows ----------------------------------------------------- */
   .card {
     background: var(--color-surface);
@@ -479,7 +525,7 @@
   .dock-inner {
     pointer-events: auto;
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     align-items: center;
     width: 100%;
     max-width: 29rem;

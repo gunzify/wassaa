@@ -3,7 +3,7 @@ import { DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, ListObject
 import { getSignedUrl } from 'npm:@aws-sdk/s3-request-presigner@3';
 import { ageAt, greatCircleDistanceKm, isOnboardingComplete } from './domain.ts';
 import { tickMatch, tickUserThreads } from './npc.ts';
-import { notificationsRoute, adminNotificationsRoute } from './notifications.ts';
+import { notificationsRoute } from './notifications.ts';
 
 export type Row = Record<string, any>;
 const allowedOrigins = (Deno.env.get('APP_ORIGINS') || 'https://wassaa.app,http://localhost:5173,http://localhost:5174,http://localhost:4173').split(',').map((s) => s.trim());
@@ -38,7 +38,7 @@ const PRICING = {
   freeDailySwipes: 20,
   paidSwipe: 1,
   revealLikes: 15,
-  boost: 10
+  boost: 100
 } as const;
 const DEFAULT_PRIVACY = { serviceVisibility: 'matches', rankVisibility: 'private', verificationDisplay: 'badge', chatNotifications: true, twoFactorAuth: false, privateIntroductionOptIn: true };
 const MAX_JSON_BYTES = 1_500_000;
@@ -137,6 +137,34 @@ function cleanValuesFamily(value: unknown): Row | null {
   if (familyPlans) out.familyPlans = familyPlans;
   return Object.keys(out).length ? out : null;
 }
+/**
+ * One definition of account standing.
+ *
+ * `profiles.blocked_us` is the legacy staff block and `account_status` is the
+ * newer sanction field; both are read by different routes (deck, likes, gate).
+ * A row where only one is set used to mean "banned in one place, active in
+ * another". They are kept in sync by the admin routes, and this helper makes
+ * every reader agree even for rows written before the sync existed.
+ */
+function accountStatusOf(p: Row): 'active' | 'restricted' | 'banned' {
+  if (p.account_status === 'banned' || p.blocked_us) return 'banned';
+  return p.account_status === 'restricted' ? 'restricted' : 'active';
+}
+
+/**
+ * The deck hides banned accounts and personas without an approved face, but a
+ * stale card or a direct id could still be liked, passed or cold-messaged.
+ * Every write route uses this same predicate so the deck's visibility is the
+ * real rule, not just a query hint.
+ */
+function isReachableProfile(p: Row): boolean {
+  if (!p || p.deleted_at || p.blocked_us || accountStatusOf(p) === 'banned') return false;
+  if (!p.is_npc) return true;
+  return Boolean(p.npc_active)
+    && p.npc_photo_review !== 'quarantine'
+    && (p.npc?.photoState ?? 'ready') !== 'awaiting_upload';
+}
+
 function profileForViewer(p: Row, viewerId: string, mutual = false, distanceKm?: number) {
   const privacy = p.privacy || DEFAULT_PRIVACY;
   // Q&A cards: real members keep them in the prompts column; seeded personas
@@ -157,7 +185,7 @@ function profileForViewer(p: Row, viewerId: string, mutual = false, distanceKm?:
     : (p.is_npc && p.npc?.values && typeof p.npc.values === 'object' && Object.keys(p.npc.values).length ? p.npc.values : null);
   return {
     id: p.id, name: p.name || 'New member',
-    ...(p.id === viewerId ? { email: p.email || undefined, phone: p.phone || undefined, hasPreciseLocation: p.location_lat != null && p.location_lng != null, credits: p.credits ?? 0, accountStatus: p.account_status || 'active', restrictionReason: p.restriction_reason || undefined, creditRegionSupported: creditRegionSupported(p.country_code), freeChat: isFreeChat(p), dailyCreditAllowance: dailyCreditAllowance(p) } : {}),
+    ...(p.id === viewerId ? { email: p.email || undefined, phone: p.phone || undefined, hasPreciseLocation: p.location_lat != null && p.location_lng != null, credits: p.credits ?? 0, accountStatus: accountStatusOf(p), restrictionReason: p.restriction_reason || undefined, creditRegionSupported: creditRegionSupported(p.country_code), freeChat: isFreeChat(p), dailyCreditAllowance: dailyCreditAllowance(p) } : {}),
     phoneVerified: Boolean(p.phone),
     ...(p.id === viewerId && p.birth_date ? { birthDate: p.birth_date } : {}), age: ageOf(p.birth_date),
     gender: p.gender || undefined, pronouns: p.pronouns || undefined,
@@ -401,6 +429,9 @@ async function handlePaystackWebhook(req: Request): Promise<Response> {
 async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: string, req: Request, origin: string | null): Promise<Response> {
   const { data: admin } = await db.from('wassaa_admin_users').select('display_name').eq('user_id', user.id).maybeSingle();
   if (!admin) return err('Admin access is not enabled for this account.', 403, origin);
+  // Audit rows name the operator by display name. Declared here because the
+  // routes below use it before the older handlers that also log actions.
+  const actor = cleanString(admin.display_name, 60) || user.id;
   if (path === '/admin/session' && req.method === 'GET') return json({ ok: true, storage: Boolean(await s3Client()) }, 200, origin);
   // One call powers the console header: every queue that needs a human, plus
   // persona and paid-member counts.
@@ -411,16 +442,100 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       const { count } = await q;
       return count ?? 0;
     };
-    const [pendingVerifications, openReports, pendingAppeals, adminOwnedThreads, personas, activePersonas] = await Promise.all([
+    const [pendingVerifications, openReports, pendingAppeals, adminOwnedThreads, personas, activePersonas, curatedPersonas] = await Promise.all([
       countOf('verification_submissions', (q) => q.eq('status', 'pending')),
       countOf('reports', (q) => q.in('status', ['pending_review', 'investigating'])),
       countOf('appeals', (q) => q.eq('status', 'pending')),
       countOf('matches', (q) => q.eq('auto_state', 'admin_owned')),
       countOf('profiles', (q) => q.eq('is_npc', true)),
       countOf('profiles', (q) => q.eq('is_npc', true).eq('npc_active', true)),
+      countOf('profiles', (q) => q.eq('is_npc', true).eq('npc->>curated', 'true')),
     ]);
     const { data: paidRows } = await db.rpc('wassaa_admin_paid_members');
-    return json({ pendingVerifications, openReports, pendingAppeals, adminOwnedThreads, personas, activePersonas, paidMembers: (paidRows || []).length }, 200, origin);
+    return json({ pendingVerifications, openReports, pendingAppeals, adminOwnedThreads, personas, activePersonas, curatedPersonas, paidMembers: (paidRows || []).length }, 200, origin);
+  }
+
+  // The console bell: the same queues the overview counts, plus who is waiting
+  // and what just landed. Derived from live tables, so it cannot drift.
+  if (path === '/admin/activity' && req.method === 'GET') {
+    const countOf = async (table: string, build?: (q: any) => any) => {
+      let q = db.from(table).select('id', { count: 'exact', head: true });
+      if (build) q = build(q);
+      const { count } = await q;
+      return count ?? 0;
+    };
+    const [verifications, reports, appeals, members, pendingVerifications, openReports, pendingAppeals] = await Promise.all([
+      db.from('verification_submissions').select('id,user_id,status,submitted_at').eq('status', 'pending').order('submitted_at', { ascending: false }).limit(8),
+      db.from('reports').select('id,reporter_id,reported_user_id,category_label,status,created_at').in('status', ['pending_review', 'investigating']).order('created_at', { ascending: false }).limit(8),
+      db.from('appeals').select('id,profile_id,status,created_at').eq('status', 'pending').order('created_at', { ascending: false }).limit(8),
+      db.from('profiles').select('id,name,photos,created_at,verification_status').eq('is_npc', false).is('deleted_at', null).order('created_at', { ascending: false }).limit(8),
+      countOf('verification_submissions', (q) => q.eq('status', 'pending')),
+      countOf('reports', (q) => q.in('status', ['pending_review', 'investigating'])),
+      countOf('appeals', (q) => q.eq('status', 'pending')),
+    ]);
+
+    const ids = new Set<string>();
+    for (const r of verifications.data || []) ids.add(r.user_id);
+    for (const r of reports.data || []) { ids.add(r.reporter_id); ids.add(r.reported_user_id); }
+    for (const r of appeals.data || []) ids.add(r.profile_id);
+    for (const r of members.data || []) ids.add(r.id);
+    const names = new Map<string, string>();
+    if (ids.size) {
+      const { data: people } = await db.from('profiles').select('id,name').in('id', [...ids]);
+      for (const p of people || []) names.set(p.id, String(p.name || 'Member'));
+    }
+
+    return json({
+      counts: { verifications: pendingVerifications, reports: openReports, appeals: pendingAppeals },
+      verifications: (verifications.data || []).map((v: Row) => ({
+        id: v.id, tab: 'verifications', at: v.submitted_at,
+        title: names.get(v.user_id) || 'Member', detail: 'ID verification waiting'
+      })),
+      reports: (reports.data || []).map((r: Row) => ({
+        id: r.id, tab: 'reports', at: r.created_at,
+        title: names.get(r.reported_user_id) || 'Member',
+        detail: `${r.category_label || 'Safety report'} — reported by ${names.get(r.reporter_id) || 'a member'}`
+      })),
+      appeals: (appeals.data || []).map((a: Row) => ({
+        id: a.id, tab: 'appeals', at: a.created_at,
+        title: names.get(a.profile_id) || 'Member', detail: 'Appeal waiting for a decision'
+      })),
+      newMembers: (members.data || []).map((m: Row) => ({
+        id: m.id, at: m.created_at,
+        title: String(m.name || 'Member'),
+        detail: m.verification_status === 'verified' ? 'Verified member joined' : 'New member joined'
+      }))
+    }, 200, origin);
+  }
+
+  // Staff can send a one-off notification to a member (outage, nudge, apology).
+  if (path === '/admin/notifications/deliver' && req.method === 'POST') {
+    const body = await bodyJson(req);
+    const recipientId = cleanString(body.recipientId, 40);
+    if (!isUuid(recipientId)) return err('Choose the member to notify.', 400, origin);
+    const kind = cleanString(body.kind, 20) || 'system';
+    if (!['match', 'message', 'like', 'system'].includes(kind)) return err('kind must be match, message, like or system.', 400, origin);
+    const text = cleanString(body.text || body.messagePreview, 300);
+    if (!text) return err('Write the notification text.', 400, origin);
+    const threadId = isUuid(body.threadId) ? body.threadId : null;
+    const { data: target } = await db.from('profiles').select('id').eq('id', recipientId).maybeSingle();
+    if (!target) return err('That member does not exist.', 404, origin);
+    const { error } = await db.from('notification_events').insert({
+      user_id: recipientId,
+      kind,
+      thread_id: threadId,
+      actor_id: null,
+      message_preview: text,
+      acknowledgement_required: Boolean(body.acknowledgementRequired)
+    });
+    if (error) return err('Could not deliver the notification.', 500, origin);
+    await db.from('admin_audit').insert({
+      admin_id: actor,
+      action: 'notification.delivered',
+      target_id: recipientId,
+      detail: { kind, threadId, preview: text.slice(0, 80) }
+    });
+    return json({ success: true }, 200, origin);
   }
   const idMatch = path.match(/^\/admin\/verifications\/([0-9a-f-]+)\/review$/i);
   const reportMatch = path.match(/^\/admin\/reports\/([0-9a-f-]+)\/status$/i);
@@ -436,7 +551,6 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
   const npcScriptOneMatch = path.match(/^\/admin\/npcs\/([0-9a-f-]+)\/scripts\/([0-9a-f-]+)$/i);
   const npcQuarantineMatch = path.match(/^\/admin\/npcs\/([0-9a-f-]+)\/quarantine$/i);
   const threadMessagesMatch = path.match(/^\/admin\/threads\/([0-9a-f-]+)\/messages$/i);
-  const actor = cleanString(admin.display_name, 60) || user.id;
   if (path === '/admin/verifications' && req.method === 'GET') {
     const { data: queue, error } = await db.from('verification_submissions').select('*').eq('status', 'pending').order('submitted_at', { ascending: true }).limit(200);
     if (error) return err('Could not load verification queue.', 500, origin);
@@ -477,13 +591,20 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     // region_attested_code = country_code, so a later self-service country edit
     // invalidates the grant until the member is reviewed again.
     const { data: reviewedProfile } = await db.from('profiles').select('country_code').eq('id', sub.user_id).maybeSingle();
-    await db.from('profiles').update({
+    const { error: profileError } = await db.from('profiles').update({
       verification_status: approve ? 'verified' : 'rejected',
       verified_at: approve ? now.slice(0, 10) : null,
       region_attested_at: approve ? now : null,
       region_attested_code: approve ? (reviewedProfile?.country_code || null) : null,
       updated_at: now
     }).eq('id', sub.user_id);
+    if (profileError) {
+      // The submission is already marked reviewed; without this compensation
+      // the member's status would stay pending forever and the admin could not
+      // re-review it (409). Put it back in the queue.
+      await db.from('verification_submissions').update({ status: 'pending', reviewed_at: null, reviewed_by: null, review_note: null }).eq('id', resolved.id);
+      return err('Could not apply the verification decision. Nothing changed; retry.', 500, origin);
+    }
     await db.from('admin_audit').insert({ admin_id: actor, action: approve ? 'verification.approved' : 'verification.rejected', target_id: resolved.id, detail: { userId: sub.user_id, note, regionAttested: approve ? reviewedProfile?.country_code || null : null } });
     const { data: p } = await db.from('profiles').select('id,name,verification_status').eq('id', sub.user_id).maybeSingle();
     return json({ success: true, submission: { id: resolved.id, status: resolved.status, reviewedAt: resolved.reviewed_at }, user: p }, 200, origin);
@@ -495,9 +616,9 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const { data: reports, error } = await q;
     if (error) return err('Could not load reports.', 500, origin);
     const ids = [...new Set((reports || []).flatMap((r: Row) => [r.reporter_id, r.reported_user_id]).filter(Boolean))];
-    const { data: profiles } = ids.length ? await db.from('profiles').select('id,name,blocked_us,verification_status').in('id', ids) : { data: [] as Row[] };
+    const { data: profiles } = ids.length ? await db.from('profiles').select('id,name,blocked_us,account_status,verification_status').in('id', ids) : { data: [] as Row[] };
     const byId = new Map<string, Row>((profiles || []).map((p: Row): [string, Row] => [p.id, p]));
-    return json({ reports: (reports || []).map((r: Row) => ({ ...reportRow(r), reporter: byId.get(r.reporter_id) ? { id: r.reporter_id, name: byId.get(r.reporter_id).name } : null, reported: byId.get(r.reported_user_id) ? { id: r.reported_user_id, name: byId.get(r.reported_user_id).name, blocked: byId.get(r.reported_user_id).blocked_us, verificationStatus: byId.get(r.reported_user_id).verification_status } : null })) }, 200, origin);
+    return json({ reports: (reports || []).map((r: Row) => ({ ...reportRow(r), reporter: byId.get(r.reporter_id) ? { id: r.reporter_id, name: byId.get(r.reporter_id).name } : null, reported: byId.get(r.reported_user_id) ? { id: r.reported_user_id, name: byId.get(r.reported_user_id).name, blocked: accountStatusOf(byId.get(r.reported_user_id)) === 'banned', verificationStatus: byId.get(r.reported_user_id).verification_status } : null })) }, 200, origin);
   }
   if (reportMatch && req.method === 'POST') {
     const b = await bodyJson(req), status = String(b.status);
@@ -514,11 +635,20 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const b = await bodyJson(req);
     if (typeof b.blocked !== 'boolean') return err('blocked must be true or false.', 400, origin);
     const blocked = b.blocked;
-    const { data: target } = await db.from('profiles').select('id,name').eq('id', blockMatch[1]).maybeSingle();
+    const reason = cleanString(b.reason, 500) || 'Blocked by staff after a report review.';
+    const { data: target } = await db.from('profiles').select('id,name,account_status').eq('id', blockMatch[1]).maybeSingle();
     if (!target) return err('Profile not found.', 404, origin);
-    await db.from('profiles').update({ blocked_us: blocked, updated_at: new Date().toISOString() }).eq('id', target.id);
-    await db.from('admin_audit').insert({ admin_id: actor, action: blocked ? 'user.blocked' : 'user.unblocked', target_id: target.id, detail: { reason: cleanString(b.reason, 200) || null } });
-    return json({ success: true, user: { id: target.id, name: target.name, blocked } }, 200, origin);
+    const now = new Date().toISOString();
+    // `blocked_us` is the historical flag the deck and the report queue read;
+    // keep it and the sanction field in lockstep so "Block" and "Ban" are one
+    // state instead of two half-states that disagree.
+    const patch: Row = blocked
+      ? { blocked_us: true, account_status: 'banned', restriction_reason: reason, restricted_at: now, restricted_by: actor, updated_at: now }
+      : { blocked_us: false, account_status: 'active', restriction_reason: null, restricted_at: null, restricted_by: null, updated_at: now };
+    const { error } = await db.from('profiles').update(patch).eq('id', target.id);
+    if (error) return err('Could not update the block.', 500, origin);
+    await db.from('admin_audit').insert({ admin_id: actor, action: blocked ? 'user.blocked' : 'user.unblocked', target_id: target.id, detail: { reason: blocked ? reason : null } });
+    return json({ success: true, user: { id: target.id, name: target.name, blocked, accountStatus: blocked ? 'banned' : 'active' } }, 200, origin);
   }
   if (path === '/admin/audit' && req.method === 'GET') {
     const limit = Math.min(200, Math.max(1, Number(reqUrl(req).searchParams.get('limit')) || 50));
@@ -571,9 +701,24 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       return json({ success: true, action }, 200, origin);
     }
     const now = new Date().toISOString();
+    // Restrictions and bans are different rungs, not independent flags. A
+    // "restrict" on a banned account used to silently widen access to
+    // read-only; require an explicit lift first.
+    if (action === 'restrict' && accountStatusOf(target) === 'banned') {
+      return err('This account is banned. Lift the ban before applying a restriction.', 409, origin);
+    }
     const patch: Row = action === 'lift'
-      ? { account_status: 'active', restriction_reason: null, restricted_at: null, restricted_by: null, updated_at: now }
-      : { account_status: action === 'ban' ? 'banned' : 'restricted', restriction_reason: reason, restricted_at: now, restricted_by: actor, updated_at: now };
+      ? { blocked_us: false, account_status: 'active', restriction_reason: null, restricted_at: null, restricted_by: null, updated_at: now }
+      : {
+          // `blocked_us` stays in lockstep with the sanction so both the deck
+          // and the report queue read the same standing.
+          blocked_us: action === 'ban',
+          account_status: action === 'ban' ? 'banned' : 'restricted',
+          restriction_reason: reason,
+          restricted_at: now,
+          restricted_by: actor,
+          updated_at: now
+        };
     const { data: updated, error } = await db.from('profiles').update(patch).eq('id', target.id).select('id,account_status').maybeSingle();
     if (error || !updated) return err('Could not apply the account action.', 500, origin);
     await db.from('admin_audit').insert({ admin_id: actor, action: `user.${action}`, target_id: target.id, detail: { reason: reason || null } });
@@ -619,7 +764,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       professionCategory: p.profession_category, professionTitle: p.profession_title, classOfService: p.class_of_service,
       orgRole: p.org_role, skill: p.skill, service: p.service, photos: p.photos, interests: p.interests, bio: p.bio,
       email: p.email, phone: p.phone, verificationStatus: p.verification_status, verifiedAt: p.verified_at,
-      accountStatus: p.account_status || 'active', restrictionReason: p.restriction_reason || undefined,
+      accountStatus: accountStatusOf(p), restrictionReason: p.restriction_reason || undefined,
       blockedUs: p.blocked_us, isNpc: Boolean(p.is_npc), credits: p.credits ?? 0, createdAt: p.created_at
     }) : null;
     return json({
@@ -638,13 +783,13 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const { data: appeals, error } = await q;
     if (error) return err('Could not load appeals.', 500, origin);
     const ids = [...new Set((appeals || []).map((a: Row) => a.profile_id))];
-    const { data: profiles } = ids.length ? await db.from('profiles').select('id,name,account_status,restriction_reason,verification_status,photos,created_at').in('id', ids) : { data: [] as Row[] };
+    const { data: profiles } = ids.length ? await db.from('profiles').select('id,name,blocked_us,account_status,restriction_reason,verification_status,photos,created_at').in('id', ids) : { data: [] as Row[] };
     const byId = new Map<string, Row>((profiles || []).map((p: Row): [string, Row] => [p.id, p]));
     return json({ appeals: (appeals || []).map((a: Row) => {
       const p = byId.get(a.profile_id);
       return { id: a.id, status: a.status, note: a.note, sanctionReason: a.sanction_reason, decisionNote: a.decision_note,
         decidedBy: a.decided_by, decidedAt: a.decided_at, createdAt: a.created_at,
-        profile: p ? { id: p.id, name: p.name, accountStatus: p.account_status, restrictionReason: p.restriction_reason, verificationStatus: p.verification_status, photos: p.photos, createdAt: p.created_at } : null };
+        profile: p ? { id: p.id, name: p.name, accountStatus: accountStatusOf(p), restrictionReason: p.restriction_reason, verificationStatus: p.verification_status, photos: p.photos, createdAt: p.created_at } : null };
     }) }, 200, origin);
   }
   if (appealDecisionMatch && req.method === 'POST') {
@@ -657,7 +802,16 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const now = new Date().toISOString();
     const { error } = await db.from('appeals').update({ status: grant ? 'granted' : 'denied', decision_note: note, decided_by: actor, decided_at: now }).eq('id', appeal.id);
     if (error) return err('Could not record the appeal decision.', 500, origin);
-    if (grant) await db.from('profiles').update({ account_status: 'active', restriction_reason: null, restricted_at: null, restricted_by: null, updated_at: now }).eq('id', appeal.profile_id);
+    if (grant) {
+      // Clearing only `account_status` left legacy `blocked_us` rows locked
+      // out even after a granted appeal. Reinstate both, and keep the appeal
+      // pending if the profile write fails so the queue cannot lose it.
+      const { error: restoreError } = await db.from('profiles').update({ blocked_us: false, account_status: 'active', restriction_reason: null, restricted_at: null, restricted_by: null, updated_at: now }).eq('id', appeal.profile_id);
+      if (restoreError) {
+        await db.from('appeals').update({ status: 'pending', decision_note: null, decided_by: null, decided_at: null }).eq('id', appeal.id);
+        return err('The account could not be reinstated; the appeal is still pending. Retry.', 500, origin);
+      }
+    }
     await db.from('admin_audit').insert({ admin_id: actor, action: grant ? 'appeal.granted' : 'appeal.denied', target_id: appeal.profile_id, detail: { appealId: appeal.id, note } });
     return json({ success: true, status: grant ? 'granted' : 'denied' }, 200, origin);
   }
@@ -744,6 +898,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     if (gender === 'female' || gender === 'male') q = q.eq('gender', gender);
     if (active === '1') q = q.eq('npc_active', true);
     if (active === '0') q = q.eq('npc_active', false);
+    if (params.get('curated') === '1') q = q.eq('npc->>curated', 'true');
     if (review === 'quarantine') q = q.eq('npc_photo_review', 'quarantine');
     if (review === 'ok') q = q.eq('npc_photo_review', 'ok');
     if (service) q = q.ilike('service', `%${service.replace(/[%_]/g, '')}%`);
@@ -757,6 +912,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       orgRole: p.org_role, skill: p.skill, service: p.service, bio: p.bio, photos: p.photos, interests: p.interests,
       datingGoal: p.dating_goal, prompts: p.prompts || [], lifestyle: p.lifestyle || null, values: p.values_family || null,
       verificationStatus: p.verification_status, active: p.npc_active, persona: p.npc || {},
+      curated: Boolean((p.npc || {}).curated),
       aiEnabled: Boolean(p.npc_ai_enabled), photoReview: p.npc_photo_review || 'ok',
       quarantineReason: p.npc_quarantine_reason || undefined, createdAt: p.created_at
     })), total: count ?? 0, limit, offset }, 200, origin);
@@ -782,7 +938,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
   }
   if (npcOneMatch && req.method === 'PATCH') {
     const b = await bodyJson(req);
-    const { data: npc } = await db.from('profiles').select('id,is_npc,org_role,class_of_service').eq('id', npcOneMatch[1]).maybeSingle();
+    const { data: npc } = await db.from('profiles').select('id,is_npc,org_role,class_of_service,npc,photos,npc_photo_review').eq('id', npcOneMatch[1]).maybeSingle();
     if (!npc) return err('NPC not found.', 404, origin);
     if (!npc.is_npc) return err('This profile is not an NPC.', 409, origin);
     const update: Row = {};
@@ -850,7 +1006,23 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       update.verification_status = status;
       update.verified_at = status === 'verified' ? new Date().toISOString().slice(0, 10) : null;
     }
-    if (typeof b.active === 'boolean') update.npc_active = b.active;
+    if (typeof b.active === 'boolean') {
+      // A quarantined photo or a persona that never received a human-chosen
+      // face is hidden by the deck even when the row says active. Refuse the
+      // write instead of letting the console show "Active" on a persona
+      // members can never see.
+      if (b.active && npc.npc_photo_review === 'quarantine' && b.photoReview !== 'ok') {
+        return err('Release the quarantined photo before activating this persona.', 409, origin);
+      }
+      if (b.active) {
+        const persona = { ...(npc.npc || {}), ...((b.persona && typeof b.persona === 'object' && !Array.isArray(b.persona)) ? b.persona as Row : {}) };
+        const photos = Array.isArray(npc.photos) ? npc.photos : [];
+        if (!photos.length || persona.photoState === 'awaiting_upload') {
+          return err('Upload a photo for this persona before activating it.', 409, origin);
+        }
+      }
+      update.npc_active = b.active;
+    }
     if (typeof b.aiEnabled === 'boolean') update.npc_ai_enabled = b.aiEnabled;
     if (typeof b.photoReview === 'string') {
       if (b.photoReview !== 'ok' && b.photoReview !== 'quarantine') return err('photoReview must be ok or quarantine.', 400, origin);
@@ -858,7 +1030,26 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       update.npc_quarantined_at = b.photoReview === 'quarantine' ? new Date().toISOString() : null;
       if (b.photoReview === 'quarantine') update.npc_active = false;
     }
-    if (b.persona && typeof b.persona === 'object' && !Array.isArray(b.persona)) update.npc = b.persona;
+    if (b.persona && typeof b.persona === 'object' && !Array.isArray(b.persona)) {
+      // Merge, don't replace. `npc` holds `curated`, `photoState` and other
+      // flags the edit form does not send; replacing it silently un-curated the
+      // profile and made the persona look ready when it had no chosen face.
+      update.npc = { ...(npc.npc || {}), ...(b.persona as Row) };
+    }
+    // The curated set is a flag inside the persona document, not a column. It
+    // marks the hand-vetted profiles the deck ships with; the rest of the pool
+    // stays paused underneath so the console can pull one in at any time.
+    if (typeof b.curated === 'boolean') {
+      const persona = { ...((update.npc as Row) || (npc.npc as Row) || {}) };
+      if (b.curated) {
+        persona.curated = true;
+        persona.curatedAt = new Date().toISOString();
+      } else {
+        delete persona.curated;
+        delete persona.curatedAt;
+      }
+      update.npc = persona;
+    }
     if (Array.isArray(b.interests)) update.interests = b.interests.map((v: unknown) => cleanString(v, 80)).filter(Boolean).slice(0, 8);
     if (Array.isArray(b.prompts)) update.prompts = cleanPrompts(b.prompts);
     if (b.lifestyle !== undefined) update.lifestyle = cleanLifestyle(b.lifestyle);
@@ -875,7 +1066,8 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     update.updated_at = new Date().toISOString();
     const { data: updated, error } = await db.from('profiles').update(update).eq('id', npcOneMatch[1]).select('id').maybeSingle();
     if (error || !updated) return err('Could not update NPC.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.updated', target_id: npcOneMatch[1], detail: { fields: Object.keys(update).filter((k) => k !== 'updated_at') } });
+    const auditAction = typeof b.curated === 'boolean' ? (b.curated ? 'npc.curated' : 'npc.uncurated') : 'npc.updated';
+    await db.from('admin_audit').insert({ admin_id: actor, action: auditAction, target_id: npcOneMatch[1], detail: { fields: Object.keys(update).filter((k) => k !== 'updated_at') } });
     return json({ success: true }, 200, origin);
   }
   if (npcPresignMatch && req.method === 'POST') {
@@ -895,21 +1087,30 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
   if (npcPhotosMatch && req.method === 'POST') {
     const b = await bodyJson(req);
     if (!Array.isArray(b.photos)) return err('photos must be an array of image URLs or keys.', 400, origin);
-    const { data: npc } = await db.from('profiles').select('id,is_npc,npc,photos').eq('id', npcPhotosMatch[1]).maybeSingle();
+    const { data: npc } = await db.from('profiles').select('id,is_npc,npc,photos,npc_active').eq('id', npcPhotosMatch[1]).maybeSingle();
     // Same ownership rule as member photos: only this persona's own upload
     // prefix (or a value already on the row) can be saved.
     const photos = ownedPhotoValues(npcPhotosMatch[1], b.photos, npc?.photos || []);
     if (!npc?.is_npc) return err('NPC not found.', 404, origin);
     // A photo uploaded by a human is the final word: mark the persona `manual`
-    // so the automatic pool dealer never re-deals over it, and put it live now.
+    // so the automatic pool dealer never re-deals over it.
     const persona = { ...(npc.npc || {}) };
     const hasPhotos = photos.length > 0;
     persona.photoState = hasPhotos ? 'manual' : 'awaiting_upload';
     const update: Row = { photos, npc: persona, updated_at: new Date().toISOString() };
-    update.npc_active = hasPhotos;
+    // A person chose this face, so an automated quarantine no longer applies.
+    // Clearing the photo list sends the persona back to the pool instead.
+    if (hasPhotos) {
+      update.npc_photo_review = 'ok';
+      update.npc_quarantine_reason = null;
+      update.npc_quarantined_at = null;
+    }
+    // Curated profiles stay staged while they are being edited; the curator
+    // pushes them live with Activate. Pool personas still go live on upload.
+    update.npc_active = persona.curated ? (hasPhotos ? Boolean(npc.npc_active) : false) : hasPhotos;
     const { error } = await db.from('profiles').update(update).eq('id', npc.id);
     if (error) return err('Could not update NPC photos.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.photos', target_id: npc.id, detail: { count: photos.length, active: hasPhotos } });
+    await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.photos', target_id: npc.id, detail: { count: photos.length, active: update.npc_active, review: hasPhotos ? 'ok' : undefined } });
     return json({ success: true, photos }, 200, origin);
   }
   // ---- Persona scripts: every line a persona can say, editable by staff ----
@@ -1073,16 +1274,17 @@ Deno.serve(async (req) => {
   }
   const { data: profile, error: profileError } = await db.from('profiles').select('*').eq('auth_user_id', user.id).maybeSingle();
   if (profileError) return err('Could not load your account.', 500, origin);
-  if (!profile || profile.deleted_at || profile.blocked_us) return err('Account unavailable.', 403, origin);
+  if (!profile || profile.deleted_at) return err('Account unavailable.', 403, origin);
   const uid = profile.id as string;
-  // Sanctions (KB §18D): banned = only session + appeal; restricted = read-only,
-  // mutations rejected. The stored reason rides along in the message body so the
-  // client can display it next to the ACCOUNT_* code.
-  const accountStatus = profile.account_status || 'active';
+  // Sanctions (KB §18D): banned = only session + appeal + erasure; restricted =
+  // read-only, mutations rejected. The stored reason rides along in the message
+  // body so the client can display it next to the ACCOUNT_* code.
+  const accountStatus = accountStatusOf(profile);
   const sanctionReason = profile.restriction_reason || undefined;
-  const appealAllowed = path === '/appeals' || path === '/auth/session';
-  if (accountStatus === 'banned' && !appealAllowed) return err(sanctionReason || 'This account has been banned by the platform.', 403, origin, 'ACCOUNT_BANNED');
-  if (accountStatus === 'restricted' && req.method !== 'GET' && !appealAllowed) return err(sanctionReason || 'This account is restricted. Submit an appeal to have it reviewed.', 403, origin, 'ACCOUNT_RESTRICTED');
+  // Account erasure is a legal right and must stay reachable even after a ban.
+  const sanctionAllowed = path === '/appeals' || path === '/auth/session' || path === '/me/account';
+  if (accountStatus === 'banned' && !sanctionAllowed) return err(sanctionReason || 'This account has been banned by the platform.', 403, origin, 'ACCOUNT_BANNED');
+  if (accountStatus === 'restricted' && req.method !== 'GET' && !sanctionAllowed) return err(sanctionReason || 'This account is restricted. Submit an appeal to have it reviewed.', 403, origin, 'ACCOUNT_RESTRICTED');
   const onboardingRoutes = new Set(['/auth/session', '/me/profile', '/me/preferences', '/me/location', '/uploads/presign', '/me/account', '/appeals']);
   if (!isOnboardingComplete(profile) && !onboardingRoutes.has(path)) {
     return err('Complete your required profile setup before using discovery or messaging.', 409, origin, 'ONBOARDING_REQUIRED');
@@ -1178,30 +1380,35 @@ Deno.serve(async (req) => {
       if (!clearLocation && (typeof latitude !== 'number' || typeof longitude !== 'number' || !Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180)) {
         return err('Provide valid latitude and longitude coordinates.', 400, origin);
       }
-      const { error } = await db.from('profiles').update({
+      // Clearing the device location must also clear the distance limit in the
+      // same write. As two statements, a failure between them left the member
+      // with a radius but no coordinates — a deck that matches nothing.
+      const update: Row = {
         location_lat: clearLocation ? null : latitude,
         location_lng: clearLocation ? null : longitude,
         updated_at: new Date().toISOString()
-      }).eq('id', uid);
-      if (error) return err('Could not update location settings.', 500, origin);
+      };
       if (clearLocation && profile.match_preferences?.maxDistanceKm) {
         const preferences = { ...profile.match_preferences };
         delete preferences.maxDistanceKm;
-        const { error: preferenceError } = await db.from('profiles').update({ match_preferences: preferences }).eq('id', uid);
-        if (preferenceError) return err('Location was cleared, but distance matching could not be disabled.', 500, origin);
+        update.match_preferences = preferences;
       }
+      const { error } = await db.from('profiles').update(update).eq('id', uid);
+      if (error) return err('Could not update location settings.', 500, origin);
       return json({ success: true, hasPreciseLocation: !clearLocation }, 200, origin);
     }
     if (path === '/me/boost' && req.method === 'POST') {
       const limited = await allowAction('boost', 5, 3600); if (limited) return limited;
-      const { data: balance } = await db.rpc('wassaa_spend_credit', { p_profile: uid, p_delta: 10, p_reason: 'boost', p_reference: null });
-      if (typeof balance !== 'number' || balance < 0) return err('You need 10 credits for a Boost.', 402, origin, 'CREDITS_NEEDED');
-      const stillBoosted = profile.boosted_until && Date.parse(profile.boosted_until) > Date.now();
-      const until = new Date(stillBoosted ? profile.boosted_until : Date.now());
-      until.setHours(until.getHours() + 1);
-      const { error } = await db.from('profiles').update({ boosted_until: until.toISOString() }).eq('id', uid);
-      if (error) return err('Could not start the Boost.', 500, origin);
-      return json({ success: true, boostedUntil: until.toISOString(), balance }, 200, origin);
+      // Spend + extend happen in one locked transition: the old three-step
+      // read/charge/write could charge twice for one hour or lose the credits
+      // when the final write failed.
+      const { data: result, error: boostError } = await db.rpc('wassaa_start_boost', { p_profile: uid, p_cost: PRICING.boost });
+      if (boostError) return err('Could not start the Boost.', 500, origin);
+      const outcome = Array.isArray(result) ? result[0] : result;
+      if (outcome?.error === 'no_credits') return err(`You need ${PRICING.boost} credits for a Boost.`, 402, origin, 'CREDITS_NEEDED');
+      if (outcome?.error === 'unavailable') return err('Account unavailable.', 403, origin);
+      if (outcome?.error || !outcome?.boostedUntil) return err('Could not start the Boost.', 500, origin);
+      return json({ success: true, boostedUntil: outcome.boostedUntil, balance: outcome.balance }, 200, origin);
     }
     if (path === '/me/account' && req.method === 'DELETE') {
       const client = await s3Client();
@@ -1299,7 +1506,7 @@ Deno.serve(async (req) => {
       const b = await getBody(), targetId = cleanString(b.targetUserId, 64);
       if (!isUuid(targetId) || targetId === uid) return err('You cannot like your own profile.', 400, origin);
       const { data: target } = await db.from('profiles').select('*').eq('id', targetId).is('deleted_at', null).maybeSingle();
-      if (!target || target.blocked_us) return err('Profile not found.', 404, origin);
+      if (!target || !isReachableProfile(target)) return err('Profile not found.', 404, origin);
       // 20 free right-swipes a day for every tier, then 1 credit per extra
       // swipe — exhausted swipers can pay their way past the cap. The charge is
       // taken first and refunded if the swipe does not land.
@@ -1312,7 +1519,8 @@ Deno.serve(async (req) => {
       ({ data: outcome, error } = await db.rpc('wassaa_record_like', { p_from: uid, p_to: targetId, p_kind: 'like', p_daily_limit: PRICING.freeDailySwipes, p_weekly_super_limit: -1 }));
       if (outcome === 'daily_limit') {
         // Cap reached: 1 credit buys this swipe past the limit.
-        const { data: swipeBalance } = await db.rpc('wassaa_spend_credit', { p_profile: uid, p_delta: PRICING.paidSwipe, p_reason: 'extra_swipe', p_reference: targetId });
+        const { data: swipeBalance, error: swipeError } = await db.rpc('wassaa_spend_credit', { p_profile: uid, p_delta: PRICING.paidSwipe, p_reason: 'extra_swipe', p_reference: targetId });
+        if (swipeError) { await refund(); return err('Could not charge for the extra swipe. Try again.', 500, origin); }
         if (typeof swipeBalance !== 'number' || swipeBalance < 0) {
           await refund();
           return err(`Daily swipe limit reached — ${PRICING.paidSwipe} credit per extra swipe. Top up to keep swiping.`, 402, origin, 'CREDITS_NEEDED');
@@ -1331,7 +1539,7 @@ Deno.serve(async (req) => {
       // likes to an active persona are met with a like back, which is the same
       // shape as a real member deciding to match. The swipe row is the only
       // trace and is never exposed to clients.
-      if (outcome === 'recorded' && target.is_npc && target.npc_active) {
+      if (outcome === 'recorded' && target.is_npc && isReachableProfile(target)) {
         const { data: existingNpcLike } = await db.from('swipes').select('id')
           .eq('from_user_id', targetId).eq('to_user_id', uid).maybeSingle();
         if (!existingNpcLike && Math.random() < 0.32) {
@@ -1359,7 +1567,7 @@ Deno.serve(async (req) => {
       const b = await getBody(), targetId = cleanString(b.profileId || b.targetUserId, 64);
       if (!isUuid(targetId) || targetId === uid) return err('Invalid message target.', 400, origin);
       const { data: target } = await db.from('profiles').select('*').eq('id', targetId).is('deleted_at', null).maybeSingle();
-      if (!target || target.blocked_us) return err('Profile not found.', 404, origin);
+      if (!target || !isReachableProfile(target)) return err('Profile not found.', 404, origin);
       const { data: block } = await db.from('blocks').select('id').or(`and(blocker_id.eq.${uid},blocked_id.eq.${targetId}),and(blocker_id.eq.${targetId},blocked_id.eq.${uid})`).limit(1);
       if (block?.length) return err('Unable to message this member.', 403, origin);
       const a = uid < targetId ? uid : targetId, c = uid < targetId ? targetId : uid;
@@ -1380,8 +1588,10 @@ Deno.serve(async (req) => {
       const limited = await allowAction('pass', 300, 600); if (limited) return limited;
       const b = await getBody(), targetId = cleanString(b.targetUserId, 64);
       if (!isUuid(targetId) || targetId === uid) return err('Invalid pass target.', 400, origin);
-      const { data: target } = await db.from('profiles').select('id,blocked_us').eq('id', targetId).is('deleted_at', null).maybeSingle();
-      if (!target || target.blocked_us) return err('Profile not found.', 404, origin);
+      // A pass is not an interaction: never strand a deck on a stale card just
+      // because the profile was hidden/paused after it was fetched.
+      const { data: target } = await db.from('profiles').select('id').eq('id', targetId).is('deleted_at', null).maybeSingle();
+      if (!target) return err('Profile not found.', 404, origin);
       const { data: block } = await db.from('blocks').select('id').or(`and(blocker_id.eq.${uid},blocked_id.eq.${targetId}),and(blocker_id.eq.${targetId},blocked_id.eq.${uid})`).limit(1);
       if (block?.length) return err('Unable to interact with this profile.', 403, origin);
       const { error } = await db.from('swipes').upsert({ from_user_id: uid, to_user_id: targetId, kind: 'pass' }, { onConflict: 'from_user_id,to_user_id', ignoreDuplicates: true });
@@ -1402,13 +1612,23 @@ Deno.serve(async (req) => {
       const exclude = new Set([...(swiped || []).map((x: Row) => x.to_user_id), ...(blockRows || []).map((x: Row) => x.blocker_id === uid ? x.blocked_id : x.blocker_id)]);
       const ids = [...new Set((likes || []).map((x: Row) => x.from_user_id).filter((id: string) => !exclude.has(id)))];
       if (!ids.length) return json({ likes: [] }, 200, origin);
+      // Resolve who is actually still visible before charging: a like from a
+      // since-banned or erased account must not cost 15 credits to discover
+      // there is nothing to show.
+      const { data: profiles } = await db.from('profiles').select('*').in('id', ids).eq('blocked_us', false).neq('account_status', 'banned').is('deleted_at', null);
+      if (!(profiles || []).length) return json({ likes: [] }, 200, origin);
+      let balance: number | undefined;
       if (!revealed) {
-        const { data: balance } = await db.rpc('wassaa_spend_credit', { p_profile: uid, p_delta: 15, p_reason: 'reveal_likes', p_reference: null });
-        if (typeof balance !== 'number' || balance < 0) return err('You need 15 credits to see who liked you.', 402, origin, 'CREDITS_NEEDED');
-        await db.from('profiles').update({ revealed_likes_at: new Date().toISOString() }).eq('id', uid);
+        // Spend + stamp in one locked RPC; a failed stamp used to charge again
+        // on the next tap.
+        const { data: result, error: revealError } = await db.rpc('wassaa_reveal_likes', { p_profile: uid, p_cost: 15 });
+        if (revealError) return err('Could not unlock likes.', 500, origin);
+        const outcome = Array.isArray(result) ? result[0] : result;
+        if (outcome?.error === 'no_credits') return err('You need 15 credits to see who liked you.', 402, origin, 'CREDITS_NEEDED');
+        if (outcome?.error) return err('Could not unlock likes.', 500, origin);
+        if (typeof outcome?.balance === 'number') balance = outcome.balance;
       }
-      const { data: profiles } = await db.from('profiles').select('*').in('id', ids).eq('blocked_us', false).is('deleted_at', null);
-      return json({ likes: (profiles || []).map((p: Row) => profileForViewer(p, uid, false)) }, 200, origin);
+      return json({ likes: (profiles || []).map((p: Row) => profileForViewer(p, uid, false)), ...(balance != null ? { balance } : {}) }, 200, origin);
     }
 
     // Match list and chat
@@ -1485,7 +1705,7 @@ Deno.serve(async (req) => {
       const outcome = Array.isArray(result) ? result[0] : result;
       if (outcome?.error === 'no_credits') return err('You are out of credits. Top up to keep chatting.', 402, origin, 'CREDITS_NEEDED');
       if (outcome?.error === 'cold_limit') return err(String(outcome.message || 'You can send up to 3 messages before they like you back.'), 403, origin, 'COLD_LIMIT');
-      if (outcome?.error === 'blocked' || outcome?.error === 'forbidden') return err('This conversation is unavailable.', 403, origin);
+      if (outcome?.error === 'blocked' || outcome?.error === 'forbidden' || outcome?.error === 'unavailable') return err('This conversation is unavailable.', 403, origin);
       if (outcome?.error) return err('Could not send message.', 500, origin);
       const { data: sent } = await db.from('messages').select('*').eq('id', outcome.messageId).maybeSingle();
       await db.from('match_reads').upsert({ user_id: uid, match_id: matchId, last_read_at: new Date().toISOString() }, { onConflict: 'user_id,match_id' });
@@ -1545,9 +1765,16 @@ Deno.serve(async (req) => {
           if (fromMessage && (!matchIdOut || fromMessage === matchIdOut)) { matchIdOut = fromMessage; messageIdOut = m.id; }
         }
       }
-      const { data: report, error } = await db.from('reports').insert({ reporter_id: uid, reported_user_id: reported, category, category_label: cleanString(b.categoryLabel, 100) || category, details, service_branch: cleanString(b.serviceBranch, 100) || null, also_blocked: Boolean(b.alsoBlock), match_id: matchIdOut, message_id: messageIdOut }).select('*').single();
+      const categoryLabel = cleanString(b.categoryLabel, 100) || category;
+      // Block first, report second: if the block is written but the report fails
+      // the member is still protected; the old order could file "reported and
+      // blocked" while the block row was missing.
+      if (b.alsoBlock) {
+        const { error: blockError } = await db.from('blocks').upsert({ blocker_id: uid, blocked_id: reported, reason: `Reported for ${categoryLabel}` }, { onConflict: 'blocker_id,blocked_id', ignoreDuplicates: true });
+        if (blockError) return err('Could not block this member. No report was filed; try again.', 500, origin);
+      }
+      const { data: report, error } = await db.from('reports').insert({ reporter_id: uid, reported_user_id: reported, category, category_label: categoryLabel, details, service_branch: cleanString(b.serviceBranch, 100) || null, also_blocked: Boolean(b.alsoBlock), match_id: matchIdOut, message_id: messageIdOut }).select('*').single();
       if (error) return err('Could not submit report.', 500, origin);
-      if (b.alsoBlock) await db.from('blocks').upsert({ blocker_id: uid, blocked_id: reported, reason: `Reported for ${report.category_label}` }, { onConflict: 'blocker_id,blocked_id', ignoreDuplicates: true });
       return json({ success: true, report: { id: report.id, status: report.status } }, 200, origin);
     }
 
@@ -1559,7 +1786,7 @@ Deno.serve(async (req) => {
     }
     if (path === '/appeals' && req.method === 'POST') {
       const limited = await allowAction('appeal', 3, 86400); if (limited) return limited;
-      if ((profile.account_status || 'active') === 'active') return err('Your account is in good standing — no appeal is needed.', 409, origin);
+      if (accountStatusOf(profile) === 'active') return err('Your account is in good standing — no appeal is needed.', 409, origin);
       const b = await getBody(), note = cleanString(b.note, 1000);
       if (note.length < 10) return err('Tell us a bit more (at least 10 characters).', 400, origin);
       const { data: pending } = await db.from('appeals').select('id').eq('profile_id', uid).eq('status', 'pending').maybeSingle();
@@ -1665,14 +1892,12 @@ Deno.serve(async (req) => {
     if (path === '/billing/sandbox/complete' && req.method === 'POST') return err('Sandbox payment completion is disabled.', 404, origin);
 
     // ---- notifications (in-app feed, mark-read, mute, preferences) ----
-    // ---- Admin notifications (single source of truth: supabase/functions/api/notifications.ts) ----
+    // Admin notifications live in the admin router (`/admin/activity`,
+    // `/admin/notifications/deliver`), because `/admin/*` never reaches here.
     {
-      const r = await adminNotificationsRoute(db, user, profile, uid, path, req, origin, uid);
+      const r = await notificationsRoute(db, profile, uid, path, req, origin);
       if (r) return r;
     }
-
-    const notificationResult = await notificationsRoute(db, profile, uid, path, req, origin);
-    if (notificationResult) return notificationResult;
 
     return err(`No route: ${req.method} ${path}`, 404, origin);
   } catch (e) {

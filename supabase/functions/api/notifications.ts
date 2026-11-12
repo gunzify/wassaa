@@ -21,8 +21,9 @@ import { json, err, cleanString, isUuid, bodyJson, type Row } from './index.ts';
 
 type Db = ReturnType<typeof createClient>;
 
-const KIND_MEMBER = ['match', 'message', 'like'] as const;
-const KIND_ADMIN = ['match', 'message', 'like', 'system'] as const;
+// `system` is how staff notices arrive (outages, policy changes, one-off
+// nudges). It belongs in the member feed, so treat it as a first-class kind.
+const KIND_MEMBER = ['match', 'message', 'like', 'system'] as const;
 
 export async function notificationsRoute(
   db: Db,
@@ -46,47 +47,76 @@ export async function notificationsRoute(
 
     if (since && Number.isNaN(Date.parse(since))) return err('Invalid "since" timestamp.', 400, origin);
     if (until && Number.isNaN(Date.parse(until))) return err('Invalid "until" timestamp.', 400, origin);
-    if (kind && !KIND_MEMBER.includes(kind as any)) return err('kind must be match, message or like.', 400, origin);
+    if (kind && !KIND_MEMBER.includes(kind as any)) return err('kind must be match, message, like or system.', 400, origin);
 
-    // The feed reads the checked RPC, not the view: the RPC filters by user and
-    // returns one extra row so the caller can tell whether another page exists.
-    const { data, error } = await db.rpc('wassaa_notification_summaries', {
-      p_user: uid,
-      p_since: since || null,
-      p_until: until || null,
-      p_kind: kind || null,
-      p_limit: limit + 1,
-      p_offset: offset
-    });
+    // Query the view directly: the Edge runs with the service role, so the
+    // policy that keeps anon out does not get in the way, and the view already
+    // joins each event to its read row. That makes unreadOnly and the exact
+    // unread count a normal filter instead of a second RPC.
+    let feed = db
+      .from('notification_summaries')
+      .select('*', { count: 'exact' })
+      .eq('user_id', uid)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit);
+    if (kind) feed = feed.eq('kind', kind);
+    if (since) feed = feed.gt('created_at', since);
+    if (until) feed = feed.lte('created_at', until);
+    if (unreadOnly) feed = feed.is('read_at', null);
+
+    const [{ data, error }, { count: unreadCount }] = await Promise.all([
+      feed,
+      db
+        .from('notification_summaries')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', uid)
+        .is('read_at', null)
+    ]);
     if (error) return err('Could not load notifications.', 500, origin);
 
     const rows = (data || []) as any[];
+    // `range` is inclusive, so asking for limit + 1 rows tells us there is
+    // another page without a second count.
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
-    const unreadCount = page.filter((n: any) => !n.read_at).length;
 
     // The screen renders "Name · preview", so resolve the handful of actors on
     // this page in one query instead of making the client fan out per row.
     const actorIds = [...new Set(page.map((n: any) => n.actor_id).filter(Boolean))];
-    const actorNames = new Map<string, string>();
+    const actors = new Map<string, { name: string; photo?: string }>();
     if (actorIds.length) {
-      const { data: actors } = await db.from('profiles').select('id,name').in('id', actorIds);
-      for (const a of (actors || [])) actorNames.set(String(a.id), String(a.name || 'Someone'));
+      const { data: rows } = await db.from('profiles').select('id,name,photos').in('id', actorIds);
+      for (const a of (rows || [])) {
+        actors.set(String(a.id), {
+          name: String(a.name || 'Someone'),
+          photo: Array.isArray(a.photos) ? a.photos[0] : undefined
+        });
+      }
     }
 
-    const notifications = page.map((n: any) => ({
-      id: n.id,
-      kind: n.kind as any,
-      actorId: n.actor_id,
-      actorName: actorNames.get(String(n.actor_id)) || '',
-      threadId: n.thread_id || undefined,
-      messagePreview: n.message_preview || undefined,
-      createdAt: n.created_at,
-      readAt: n.read_at || undefined,
-      acknowledgementRequired: Boolean(n.acknowledgement_required)
-    }));
+    const notifications = page.map((n: any) => {
+      const actor = actors.get(String(n.actor_id));
+      return {
+        id: n.id,
+        kind: n.kind as any,
+        actorId: n.actor_id,
+        actorName: actor?.name || '',
+        actorPhoto: actor?.photo || undefined,
+        threadId: n.thread_id || undefined,
+        messagePreview: n.message_preview || undefined,
+        createdAt: n.created_at,
+        readAt: n.read_at || undefined,
+        acknowledgementRequired: Boolean(n.acknowledgement_required)
+      };
+    });
 
-    return json({ notifications, unreadCount, hasMore, limit, offset }, 200, origin);
+    return json({
+      notifications,
+      unreadCount: unreadCount ?? 0,
+      hasMore,
+      limit,
+      offset
+    }, 200, origin);
   }
 
   // ---- mark read ----
@@ -150,8 +180,10 @@ export async function notificationsRoute(
     if (body.like !== undefined) patch.like = typeof body.like === 'boolean' ? body.like : (old.like ?? true);
     if (body.acknowledgementRequired !== undefined) patch.acknowledgementRequired = typeof body.acknowledgementRequired === 'boolean' ? body.acknowledgementRequired : (old.acknowledgementRequired ?? true);
     if (!Object.keys(patch).length) return json({ success: true, preferences: old }, 200, origin);
-    patch.updated_at = new Date().toISOString();
-    const { data, error } = await db.from('profiles').update({ notifications: patch, updated_at: new Date().toISOString() }).eq('id', uid).select('notifications').single();
+    // Merge over the stored object: writing `patch` alone would drop every key
+    // the request did not mention, silently resetting the other toggles.
+    const merged = { ...old, ...patch };
+    const { data, error } = await db.from('profiles').update({ notifications: merged, updated_at: new Date().toISOString() }).eq('id', uid).select('notifications').single();
     if (error) return err('Could not update notification preferences.', 500, origin);
     return json({ success: true, preferences: data?.notifications || old }, 200, origin);
   }
@@ -168,8 +200,9 @@ export async function notificationsRoute(
     return json({ success: true, muting: true }, 200, origin);
   }
 
-  if (path === '/notifications/unmute-thread' && req.method === 'DELETE') {
-    const threadId = (url.pathname.match(/^\/notifications\/unmute-thread\/([0-9a-f-]+)$/i) || [])[1];
+  const unmuteMatch = path.match(/^\/notifications\/unmute-thread\/([0-9a-f-]+)$/i);
+  if (unmuteMatch && req.method === 'DELETE') {
+    const threadId = unmuteMatch[1];
     if (!threadId || !isUuid(threadId)) return err('threadId is required.', 400, origin);
     const match = await db.from('matches').select('id').or(`user_a.eq.${uid},user_b.eq.${uid}`).eq('id', threadId).maybeSingle();
     if (!match) return err('Thread not found.', 404, origin);
@@ -187,13 +220,15 @@ export async function notificationsRoute(
     const threadIds = new Set((threads || []).map((t: any) => t.id));
     const muted = (mutes || []).filter((m: any) => threadIds.has(m.thread_id));
 
-    // load partner names
-    const partnerIds = new Set<string>();
+    // load partner names — keyed by *thread*, because the feed is a list of
+    // threads and the old lookup used the profile map with a thread id, which
+    // rendered every muted entry as "Member".
+    const partnerByThread = new Map<string, string>();
     for (const t of threads || []) {
-      if (t.user_a !== uid) partnerIds.add(String(t.user_a));
-      if (t.user_b !== uid) partnerIds.add(String(t.user_b));
+      partnerByThread.set(String(t.id), String(t.user_a === uid ? t.user_b : t.user_a));
     }
-    let partnerNames: Map<string, string> = new Map();
+    const partnerIds = new Set<string>(partnerByThread.values());
+    const partnerNames: Map<string, string> = new Map();
     if (partnerIds.size) {
       const { data: profiles } = await db.from('profiles').select('id,name').in('id', [...partnerIds]);
       for (const p of (profiles || [])) partnerNames.set(String(p.id), String(p.name || 'Member'));
@@ -203,159 +238,7 @@ export async function notificationsRoute(
       muted: muted.map((m: any) => ({
         threadId: m.thread_id,
         mutedAt: m.muted_at,
-        partnerName: partnerNames.get(m.thread_id) || 'Member'
-      }))
-    }, 200, origin);
-  }
-
-  return null;
-}
-
-export async function adminNotificationsRoute(
-  db: Db,
-  user: Row,
-  profile: Row,
-  uid: string,
-  path: string,
-  req: Request,
-  origin: string | null,
-  actor: string
-): Promise<Response | null> {
-  const url = new URL(req.url);
-  const q = url.searchParams;
-
-  // ---- admin own inbox ----
-  if (path === '/admin/notifications' && req.method === 'GET') {
-    const limit = Math.min(50, Math.max(1, Number(q.get('limit')) || 20));
-    const offset = Math.max(0, Number(q.get('offset')) || 0);
-    const unreadOnly = q.get('unreadOnly') === '1';
-    const kind = q.get('kind') || undefined;
-    if (kind && !KIND_ADMIN.includes(kind as any)) return err('kind must be match, message, like or system.', 400, origin);
-
-    let base = db.from('notification_events').select('*').eq('user_id', uid).order('created_at', { ascending: false }).range(offset, offset + limit);
-    if (kind) base = base.eq('kind', kind);
-    const { data, error } = await base;
-    if (error) return err('Could not load notifications.', 500, origin);
-
-    const rows = (data || []) as any[];
-    const unreadCount = rows.filter((n: any) => !n.read_at).length;
-    return json({
-      notifications: rows.map((n: any) => ({
-        id: n.id,
-        kind: n.kind,
-        actorId: n.actor_id || undefined,
-        threadId: n.thread_id || undefined,
-        messagePreview: n.message_preview || undefined,
-        createdAt: n.created_at,
-        readAt: n.read_at || undefined,
-        acknowledgementRequired: Boolean(n.acknowledgement_required)
-      })),
-      unreadCount,
-      hasMore: rows.length === limit,
-      limit,
-      offset
-    }, 200, origin);
-  }
-
-  // ---- admin mark read ----
-  if (path === '/admin/notifications/mark-read' && req.method === 'POST') {
-    const body = await bodyJson(req);
-    if (body.all === true) {
-      const { data: events } = await db.from('notification_events').select('id').eq('user_id', uid);
-      const now = new Date().toISOString();
-      const rows = (events || []).map((e: any) => ({ user_id: uid, notification_id: e.id, read_at: now }));
-      if (rows.length) {
-        const { error } = await db.from('notification_reads').upsert(rows, { onConflict: 'user_id,notification_id' });
-        if (error) return err('Could not mark notifications read.', 500, origin);
-      }
-      return json({ success: true }, 200, origin);
-    }
-    if (body.id && isUuid(body.id)) {
-      const { error } = await db.from('notification_reads').upsert({ user_id: uid, notification_id: body.id, read_at: new Date().toISOString() }, { onConflict: 'user_id,notification_id' });
-      if (error) return err('Could not mark notification read.', 500, origin);
-      return json({ success: true }, 200, origin);
-    }
-    return err('Pass { all: true } or { id: "<uuid>" }.', 400, origin);
-  }
-
-  // ---- admin queue (acknowledgement required) ----
-  if (path === '/admin/notifications/queue' && req.method === 'GET') {
-    const limit = Math.min(200, Math.max(1, Number(q.get('limit')) || 50));
-    const offset = Math.max(0, Number(q.get('offset')) || 0);
-    const kind = q.get('kind') || undefined;
-    let base = db.from('notification_events').select('*').eq('acknowledgement_required', true).order('created_at', { ascending: false }).range(offset, offset + limit);
-    if (kind && kind !== 'all') base = base.eq('kind', kind);
-    const { data, error } = await base;
-    if (error) return err('Could not load notification queue.', 500, origin);
-    const rows = (data || []) as any[];
-    return json({
-      notifications: rows.map((n: any) => ({
-        id: n.id,
-        kind: n.kind,
-        actorId: n.actor_id || undefined,
-        threadId: n.thread_id || undefined,
-        messagePreview: n.message_preview || undefined,
-        createdAt: n.created_at,
-        readAt: n.read_at || undefined,
-        acknowledgementRequired: Boolean(n.acknowledgement_required)
-      })),
-      hasMore: rows.length === limit,
-      limit,
-      offset
-    }, 200, origin);
-  }
-
-  // ---- admin deliver to member ----
-  if (path === '/admin/notifications/deliver' && req.method === 'POST') {
-    const body = await bodyJson(req);
-    const recipientId = String(body.recipientId || '');
-    if (!isUuid(recipientId)) return err('recipientId is required.', 400, origin);
-    const kind = String(body.kind || 'system');
-    if (!KIND_ADMIN.includes(kind as any)) return err('kind must be match, message, like or system.', 400, origin);
-    const threadId = isUuid(body.threadId) ? body.threadId : null;
-    const messagePreview = cleanString(body.text || body.messagePreview || '', 300);
-    const now = new Date().toISOString();
-
-    const { error } = await db.from('notification_events').insert({
-      user_id: recipientId,
-      kind,
-      thread_id: threadId,
-      actor_id: uid,
-      message_preview: messagePreview || null,
-      created_at: now,
-      acknowledgement_required: Boolean(body.acknowledgementRequired)
-    }).select('id').single();
-
-    if (error) return err('Could not create notification.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: 'notification.delivered', target_id: recipientId, detail: { kind, threadId: threadId || null } });
-    return json({ success: true }, 200, origin);
-  }
-
-  // ---- admin muted threads (staff view of a member's mutes) ----
-  if (path === '/admin/notifications/muted-threads' && req.method === 'GET') {
-    // staff can inspect mutes for a given member when reviewing a thread
-    const targetId = q.get('userId') || uid;
-    if (!isUuid(targetId)) return err('userId is required.', 400, origin);
-    const { data: mutes } = await db.from('notification_mutes').select('thread_id,muted_at').eq('user_id', targetId).order('muted_at', { ascending: false });
-    const ids = (mutes || []).map((m: any) => m.thread_id);
-    if (!ids.length) return json({ muted: [] }, 200, origin);
-    const { data: threads } = await db.from('matches').select('id,user_a,user_b').in('id', ids);
-    const muted = (mutes || []).filter((m: any) => (threads || []).some((t: any) => t.id === m.thread_id));
-    const partnerIds = new Set<string>();
-    for (const t of threads || []) {
-      if (t.user_a !== targetId) partnerIds.add(String(t.user_a));
-      if (t.user_b !== targetId) partnerIds.add(String(t.user_b));
-    }
-    let partnerNames = new Map<string, string>();
-    if (partnerIds.size) {
-      const { data: profiles } = await db.from('profiles').select('id,name').in('id', [...partnerIds]);
-      for (const p of (profiles || [])) partnerNames.set(String(p.id), String(p.name || 'Member'));
-    }
-    return json({
-      muted: muted.map((m: any) => ({
-        threadId: m.thread_id,
-        mutedAt: m.muted_at,
-        partnerName: partnerNames.get(m.thread_id) || 'Member'
+        partnerName: partnerNames.get(partnerByThread.get(String(m.thread_id)) || '') || 'Member'
       }))
     }, 200, origin);
   }

@@ -35,7 +35,7 @@ async function loadSides(db: Db, match: Row): Promise<{ npc: Row | null; member:
   const { data } = await db.from('profiles')
     .select('id,name,city,skill,profession_title,interests,is_npc,npc_active,npc_ai_enabled,npc_photo_review,npc,deleted_at')
     .in('id', [match.user_a, match.user_b]);
-  const usable = (p: Row) => p.is_npc && p.npc_active && p.npc_photo_review !== 'quarantine' && !p.deleted_at;
+  const usable = (p: Row) => p.is_npc && p.npc_active && p.npc_photo_review !== 'quarantine' && (p.npc?.photoState ?? 'ready') !== 'awaiting_upload' && !p.deleted_at;
   const npc = (data || []).find(usable) || null;
   const member = (data || []).find((p: Row) => !npc || p.id !== npc.id) || null;
   return { npc, member };
@@ -87,7 +87,12 @@ async function runEngine(db: Db, match: Row, npc: Row, member: Row | null, scrip
     const ctx = contextFor(member, npc);
     // The persona's own opener first: no two personas share a line.
     const opener = pickScript(scripts, 'greeting', null, ctx) || pickGreeting(ctx);
-    await db.rpc('wassaa_npc_reply', { p_match: match.id, p_text: opener });
+    const { data: openerId, error: openerError } = await db.rpc('wassaa_npc_reply', { p_match: match.id, p_text: opener });
+    // A failed opener must not leave the thread claimed ("active", no message),
+    // because nothing else ever retries a greeting.
+    if (openerError || !openerId) {
+      await db.from('matches').update({ auto_state: 'none' }).eq('id', match.id).eq('auto_state', 'active');
+    }
     return;
   }
 
@@ -112,25 +117,35 @@ async function runEngine(db: Db, match: Row, npc: Row, member: Row | null, scrip
   if (lastNpc && Date.parse(lastNpc.created_at) >= Date.parse(lastHuman.created_at)) return;
 
   // Claim the open reply window before answering (concurrent-tick guard).
+  const claimedWindow = match.auto_next_at;
   const { data: claimed } = await db.from('matches')
     .update({ auto_next_at: null })
     .eq('id', match.id).eq('auto_next_at', match.auto_next_at).select('id').maybeSingle();
   if (!claimed) return;
 
-  const body = String(lastHuman.text || lastHuman.caption || '').trim();
-  const intent = lastHuman.kind === 'photo' && !body ? 'smalltalk' : classifyIntent(body);
-  const ctx = contextFor(member, npc);
-  let reply = pickScript(scripts, 'reply', intent, ctx) || pickReply(intent, ctx);
+  try {
+    const body = String(lastHuman.text || lastHuman.caption || '').trim();
+    const intent = lastHuman.kind === 'photo' && !body ? 'smalltalk' : classifyIntent(body);
+    const ctx = contextFor(member, npc);
+    let reply = pickScript(scripts, 'reply', intent, ctx) || pickReply(intent, ctx);
 
-  // Optional AI pass: only when staff enabled it for this persona and a key is
-  // configured. The thread (oldest first) plus both profiles go in, so the
-  // answer is written for this conversation rather than drawn from a pool.
-  if (npc.npc_ai_enabled && aiConfigured()) {
-    const aiText = await aiReply({ npc, member, history: rows, intent });
-    if (aiText) reply = aiText;
+    // Optional AI pass: only when staff enabled it for this persona and a key is
+    // configured. The thread (oldest first) plus both profiles go in, so the
+    // answer is written for this conversation rather than drawn from a pool.
+    if (npc.npc_ai_enabled && aiConfigured()) {
+      const aiText = await aiReply({ npc, member, history: rows, intent });
+      if (aiText) reply = aiText;
+    }
+
+    const { data: replyId, error: replyError } = await db.rpc('wassaa_npc_reply', { p_match: match.id, p_text: reply });
+    if (replyError || !replyId) throw replyError || new Error('persona reply was not written');
+  } catch (e) {
+    // The window was consumed before the answer existed. Put it back so a
+    // transient AI/DB failure retries instead of stranding the thread in
+    // "active" with no due time and no message.
+    await db.from('matches').update({ auto_next_at: claimedWindow }).eq('id', match.id).eq('auto_state', 'active');
+    throw e;
   }
-
-  await db.rpc('wassaa_npc_reply', { p_match: match.id, p_text: reply });
 }
 
 /** Tick one conversation. Returns the partner's fresh thread state when the partner is an NPC, else null. */
@@ -167,7 +182,7 @@ export async function tickUserThreads(db: Db, userId: string): Promise<void> {
         .in('id', sideIds.slice(i, i + 100));
       for (const p of data || []) sides.set(p.id, p);
     }
-    const usable = (p?: Row) => Boolean(p && p.is_npc && p.npc_active && p.npc_photo_review !== 'quarantine' && !p.deleted_at);
+    const usable = (p?: Row) => Boolean(p && p.is_npc && p.npc_active && p.npc_photo_review !== 'quarantine' && (p.npc?.photoState ?? 'ready') !== 'awaiting_upload' && !p.deleted_at);
     const npcIds = candidates.flatMap((m: Row) => [m.user_a, m.user_b]).filter((id: string) => usable(sides.get(id)));
     const scripts = await loadScripts(db, npcIds);
     for (const match of candidates) {

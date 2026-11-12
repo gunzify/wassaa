@@ -8,6 +8,8 @@ import { locationLine, serviceShort } from '../../lib/profile-display';
 interface ExploreScreenProps {
   profiles: UserProfile[];
   loading?: boolean;
+  /** Notification bell, owned by the shell. */
+  headerAction?: React.ReactNode;
   onOpenProfile: (profile: UserProfile) => void;
   onRefresh: () => void;
   onOpenFilter: () => void;
@@ -22,6 +24,7 @@ interface ExploreScreenProps {
 export const ExploreScreen: React.FC<ExploreScreenProps> = ({
   profiles,
   loading = false,
+  headerAction,
   onOpenProfile,
   onRefresh,
   onOpenFilter,
@@ -65,6 +68,7 @@ export const ExploreScreen: React.FC<ExploreScreenProps> = ({
           >
             <SlidersHorizontal className="h-5 w-5" />
           </button>
+          {headerAction}
         </div>
       </header>
 
@@ -87,7 +91,7 @@ export const ExploreScreen: React.FC<ExploreScreenProps> = ({
                 Adjust filters
               </button>
               <button type="button" onClick={onDiscover} className="btn btn-sm btn-primary">
-                Back to Discover
+                Back to Swipe
               </button>
             </div>
           )}
