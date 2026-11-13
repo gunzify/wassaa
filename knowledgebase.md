@@ -1105,12 +1105,13 @@ S3 endpoint, Google and PostHog are the only permitted `connect-src` origins.
   store card.
 
 ### Curated persona set (`scripts/npc-curate.mjs`)
-- **All 800 personas are paused** (`npc_active = false`). The deck is empty
-  until the curated set is edited and activated. That is deliberate: the
-  original pool had 283 distinct faces for 800 personas, so the same person
-  appeared up to 17 times.
+- **795 pool personas are paused** (`npc_active = false`). The deck only shows
+  the curated set, and only the picks the curator has activated. That is
+  deliberate: the original pool had 283 distinct faces for 800 personas, so the
+  same person appeared up to 17 times.
 - 65 profiles are staged in `npc.curated` (20 Nigeria, 15 US, three each in
-  GB, CA, AU, DE, BR, IT, ZA, FR, IE and ES), every one paused. The console
+  GB, CA, AU, DE, BR, IT, ZA, FR, IE and ES): 5 live, 60 paused, 9 still using
+  a face a reviewer flagged. The console
   overview has a **Curated set** card that opens Personas with the
   **Curated set only** filter already applied.
 - **Console workflow:** each card has **Add to set** / **Remove from set**,
@@ -1125,6 +1126,15 @@ S3 endpoint, Google and PostHog are the only permitted `connect-src` origins.
   quarantined photo, `npc.photoState = 'awaiting_upload'`, or an empty photo
   list all hide the persona from the deck even when the row says active. The
   console would otherwise show "Active" on someone members can never see.
+- **Staging clears a stale `awaiting_upload`** (2026-11-13). The old seed
+  marked 25 picks `awaiting_upload` because the auto face-dealer had no spare
+  face, then curation gave them a photo without clearing the flag. They were
+  activatable only through a rejected `409` or, if already live, invisible in
+  the deck. `--apply` now sets `photoState: 'ready'` for a pick whose face is
+  usable, so the flag only survives when the face really is missing or flagged.
+  The repaired set is 58 activatable and 9 genuinely blocked; the same run with
+  `--reset-curated` removed two leftover picks from 2026-11-10, so the set is
+  exactly 65 again.
 - The script's `--activate` holds back any pick whose face a reviewer flagged
   anywhere in the pool, not just the pick's own row. `--reset-curated` clears the
   flag from profiles no longer in the run's picks; it is opt-in because it also

@@ -62,6 +62,12 @@ migrations; add a new one.
   Admin activation refuses quarantine and no-photo rows (`409`). A photo upload
   clears the automated quarantine (a human chose the face) and, for a curated
   persona, leaves `npc_active` alone so editing cannot push it live by accident.
+- **Follow-up (2026-11-13):** the invariant exposed a second writer drift. Seeding
+  set `photoState: 'awaiting_upload'` when the auto face-dealer ran out of faces;
+  curation then attached a photo and never cleared the flag, so 25 curated picks
+  were refused at activation and 3 of them were live but invisible. `npc-curate.mjs`
+  now writes `'ready'` when the pick has a usable face and leaves the flag alone
+  when the face is missing or flagged. The repair is idempotent.
 
 ## 4. Persona thread engine (`matches.auto_state`)
 

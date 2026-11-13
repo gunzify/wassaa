@@ -572,6 +572,13 @@ for (const p of picks) {
     npc: { ...(p.npc || {}), curated: true, curatedAt: now },
     updated_at: now
   };
+  // Seeding marks a persona `awaiting_upload` when the auto-dealer had no spare
+  // face. A pick that came in with a usable face kept that flag, so the deck hid
+  // it and activation refused it even though the profile had photos. Clearing
+  // the flag is the whole reason for staging a pick that already looks real.
+  const face = photoFile(p);
+  const faceUsable = Boolean(face) && p.npc_photo_review !== 'quarantine' && !FLAGGED_FACES.has(face);
+  if (faceUsable && patch.npc.photoState === 'awaiting_upload') patch.npc.photoState = 'ready';
   if (needsDetailFix(p)) {
     const trade = specialisationFor(p);
     patch.profession_title = trade;
@@ -595,6 +602,7 @@ for (const p of picks) {
 }
 
 const after = await request('profiles?is_npc=eq.true&npc_active=eq.true&select=id,country_code');
+const liveIds = new Set(after.map((p) => p.id));
 console.log(`\nactive personas now: ${after.length}`);
 const byCountry = {};
 for (const p of after) byCountry[p.country_code] = (byCountry[p.country_code] || 0) + 1;
@@ -603,23 +611,26 @@ console.log(`staged ${picks.length} curated profiles; repaired ${repaired} trade
 if (ACTIVATE) console.log(`activated ${activated}; held back ${heldBack} with a flagged photo`);
 
 // A receipt the console can be checked against when the edge deploy is behind.
+const liveNow = picks.filter((p) => liveIds.has(p.id)).length;
+const needsFace = picks.filter((p) => FLAGGED_FACES.has(photoFile(p))).length;
 const lines = [
   '# Curated personas',
   '',
   `Generated ${now.slice(0, 10)} by \`scripts/npc-curate.mjs\`. ${picks.length} profiles are tagged`,
-  '`npc.curated`; every other persona is paused. In the console, filter Personas by',
-  '**Curated set only**, edit a profile, then press **Activate** to put it live and',
-  '**Pause** to take it out. A photo upload clears an automated photo flag but',
-  'leaves a curated persona paused until you activate it.',
+  `\`npc.curated\`: ${liveNow} live, ${picks.length - liveNow} paused, ${needsFace} still using a face a`,
+  'reviewer flagged. In the console, filter Personas by **Curated set only**, edit a',
+  'profile, then press **Activate** to put it live and **Pause** to take it out. A',
+  'photo upload clears an automated photo flag but leaves a curated persona paused',
+  'until you activate it.',
   '',
-  '| Country | Name | City | Class | Role | Photo | Needs a photo |',
-  '| --- | --- | --- | --- | --- | --- | --- |'
+  '| Country | Name | City | Class | Role | Photo | Live | Needs a photo |',
+  '| --- | --- | --- | --- | --- | --- | --- | --- |'
 ];
 for (const group of [ng, us, others]) {
   for (const p of group) {
     const face = photoFile(p);
     const role = p.service ? `${p.rank || ''} ${p.service}`.trim() : (p.profession_title || p.profession_category || '');
-    lines.push(`| ${p.country_code} | ${p.name} | ${p.city}, ${p.state} | ${p.class_of_service || ''} | ${role} | ${face} | ${FLAGGED_FACES.has(face) ? 'yes' : ''} |`);
+    lines.push(`| ${p.country_code} | ${p.name} | ${p.city}, ${p.state} | ${p.class_of_service || ''} | ${role} | ${face} | ${liveIds.has(p.id) ? 'live' : 'paused'} | ${FLAGGED_FACES.has(face) ? 'yes' : ''} |`);
   }
 }
 writeFileSync(resolve(ROOT, 'docs/npc-curated.md'), lines.join('\n') + '\n', 'utf8');
