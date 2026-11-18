@@ -1829,7 +1829,7 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
   const path = functionRoutePath(url.pathname);
   const supabaseUrl = Deno.env.get('SUPABASE_URL'), anon = Deno.env.get('SUPABASE_ANON_KEY'), service = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-  if (path === '/health' && req.method === 'GET') return json({ ok: true, service: 'wassaa-supabase-edge-api', time: new Date().toISOString() }, 200, origin);
+  if (path === '/health' && req.method === 'GET') return json({ ok: true, service: 'wassaa-supabase-edge-api', revision: 'moderators-2026-11-18', time: new Date().toISOString() }, 200, origin);
   if ((path === '/billing/plans-public' || path === '/billing/plans') && req.method === 'GET') {
     // Public catalogue, priced for `?country=` when given. Signed-in members get
     // their own band from /billing/entitlements.
