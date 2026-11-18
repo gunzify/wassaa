@@ -316,13 +316,13 @@ The app callback should return to the deployed SPA root (for example `https://wa
 - Account standing is one state, not two. `profiles.blocked_us` is the legacy staff block and `profiles.account_status` is the sanction field; the API treats `blocked_us` as a synonym of `banned`, every writer sets both, and migration `20261112000000_state_invariants.sql` backfills old rows and adds the `wassaa_sync_account_standing` trigger, which normalises either spelling on write (`blocked_us` implies `banned`, and `banned` implies `blocked_us`). The Edge API refuses banned accounts on each authenticated request but still allows `/auth/session`, `/appeals` and account erasure. It does not revoke Supabase Auth credentials directly.
 - Verification badge means the identity submission was manually approved. It does not certify military/service employment, rank, or a current duty assignment.
 - The app records only a masked document number; source ID/selfie files are stored in private R2 until a moderator decision, then deleted and DB references nulled.
-- Admin access in the active console is Google sign-in followed by an explicit `wassaa_admin_users` allowlist lookup server-side. There is no browser-supplied admin key. The old Express admin uses `ADMIN_API_KEY` and is legacy-only.
+- Admin access in the active console is Google sign-in followed by an explicit `wassaa_admin_users` allowlist lookup server-side. There is no browser-supplied admin key. The old Express admin uses `ADMIN_API_KEY` and is legacy-only. Staff now have a role: `owner` (one, all powers including staff management), `admin` (all moderation powers, read-only staff directory, can assign personas) and `moderator` (only assigned personas and their threads — no activation, curation, verification, quarantine release, sanctions, appeals, audit or staff changes). See §“2026-11-18 — Moderator layer”.
 - Member account deletion purges known R2 media, redacts records that need to survive for safety/legal audit, deletes profile-linked relational rows through FK cascades, and deletes Auth user. This is not a full compliance-retention policy: retention rules, legal holds, backups, provider logs, and support escalation still need documented governance.
 - Support workflows, emergency escalation, abuse operations staffing, device/session management, automated liveness, and service membership verification are not implemented end-to-end.
 
 ### Active admin console
 
-`frontend/public/admin/` is no-build HTML/CSS/JS. It loads public config from the Edge function, initializes Google GIS with nonce, exchanges Google token through Supabase Auth, stores the session in `sessionStorage`, and invokes `/admin/*` with bearer token + publishable key. It has Verifications, Reports, Audit log, refresh/lock controls, and a storage-ready indicator. Before a moderator can use it, create their Supabase Auth identity and insert their UUID/display name into `public.wassaa_admin_users`. The static path must be hosted at `/admin/` along with the frontend build.
+`frontend/public/admin/` is no-build HTML/CSS/JS. It loads public config from the Edge function, initializes Google GIS with nonce, exchanges Google token through Supabase Auth, stores the session in `sessionStorage`, and invokes `/admin/*` with bearer token + publishable key. It has Verifications, Reports, Appeals, Chats, Personas, Audit log, Staff, refresh/lock controls, and a storage-ready indicator. The console is role-aware: moderators see only their assigned personas and threads, and publishing controls are admin-only. Adding staff is owner-only and happens in **Staff** by the email the person used to sign in once; the API resolves it through `wassaa_staff_find`, because PostgREST cannot read `auth.users`. Full matrix and lifecycle: `docs/moderators.md`. The static path must be hosted at `/admin/` along with the frontend build.
 
 ## 11. Legacy Express backend
 
@@ -1201,4 +1201,51 @@ owner per state:
   which made discovery match nothing.
 - **Report + block** writes the block before the report; the member is never
   told "reported and blocked" when the block row is missing.
+## 2026-11-18 — Moderator layer: scoped staff, one owner per persona, thread leases
 
+The console grew a second and third rung so persona work can be delegated without
+handing over the moderation surface.
+
+- **Roles on `wassaa_admin_users`:** `owner` (exactly one, the earliest existing
+  row at migration time), `admin` (everything except staff management), and
+  `moderator` (assigned personas and their threads only). `status` suspends
+  access without deleting assignments; `persona_limit` caps the desk (default
+  30). The API returns the same capability matrix on `/admin/session` that it
+  enforces, and `MODERATOR_PATHS` is a whitelist so a new admin route is closed
+  by default.
+- **Assignment:** `wassaa_persona_assignments` with a partial unique index on
+  `persona_id where revoked_at is null` — one active moderator per persona.
+  `wassaa_assign_persona` does validate → capacity check → revoke old → insert
+  new under an advisory lock on the moderator; reassignment is a move, not a
+  duplicate. Bulk assignment accepts up to 100 ids.
+- **Thread claim:** `matches.claimed_by` + `claim_expires_at` (30-minute lease,
+  renewed on every send). `wassaa_staff_send` locks the match row, checks
+  assignment and the lease, sets `auto_state='admin_owned'`, clears escalation
+  and inserts the message in one transaction. A second operator gets `409`;
+  admins can force-release; expired leases are treated as free (no sweeper).
+- **Escalation:** `matches.escalated_at` + `escalation_note`. A moderator raises
+  it with a required note; the admin bell and overview count it; an admin clears
+  it or replying clears it. Escalating does not release the lease.
+- **Attribution:** `messages.sent_by_staff` / `sent_by_name` are console-only.
+  Members still get `messageRow` with no staff fields; the console uses
+  `staffMessageRow` and shows “· via <operator>”. Every staff action writes
+  `admin_audit.admin_id` and the new `actor_user_id`; sends are limited to 30
+  per minute per operator (`staff_message` bucket).
+- **Publishing stays admin-only:** moderators can edit the profile, scripts and
+  photos of assigned personas and can *flag* a photo, but cannot activate, curate,
+  set verification, toggle AI, release quarantine, sanction, read reports/audit
+  or change staff. Their upload does not auto-clear quarantine or auto-activate.
+- **Lifecycle:** add staff by the email they signed in with (owner only; resolved
+  through `wassaa_staff_find`), assign personas, suspend to end access + claims,
+  remove to revoke assignments + claims. Ownership transfer promotes exactly one
+  other account and demotes the current owner; the last owner cannot be demoted,
+  suspended or removed.
+- **Console:** role chip; moderators see only Chats and Personas and a desk
+  overview (assigned, live, waiting, threads, escalations, limit); persona cards
+  show the holder and an Assign action; Chats show waiting/claim/escalation
+  badges, last-line attribution, Take over/Release/Escalate, and a locked
+  composer when someone else holds the lease. The edit sheet hides publishing
+  controls from moderators and omits them from the PATCH.
+- **Deploy order:** migration `20261118000000_moderators.sql` first (the API now
+  writes `actor_user_id` and calls the new RPCs), then the Edge function.
+  Verify with `node scripts/moderator-smoke.mjs`.

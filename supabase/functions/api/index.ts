@@ -214,6 +214,118 @@ function messageRow(r: Row) {
     mediaUrl: r.media_url || undefined, caption: r.caption || undefined,
     voice: secs == null ? undefined : { durationSeconds: secs, durationLabel: `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}` }, createdAt: r.created_at };
 }
+/**
+ * The console's version of a message. Members never receive `sentBy*`: the
+ * persona has to read as one person, only staff need to know who typed a line.
+ */
+function staffMessageRow(r: Row) {
+  return {
+    ...messageRow(r),
+    ...(r.sent_by_staff ? { sentByStaff: r.sent_by_staff, sentByName: r.sent_by_name || 'Staff' } : {})
+  };
+}
+
+// ---------------------------------------------------------------- staff roles
+// owner > admin > moderator. The console was built for one operator; these
+// helpers are the one place that decides what each rung may touch, so a new
+// route cannot quietly assume full access.
+type StaffRole = 'owner' | 'admin' | 'moderator';
+type Staff = { userId: string; displayName: string; role: StaffRole; status: string; personaLimit: number };
+const STAFF_ROLES: StaffRole[] = ['owner', 'admin', 'moderator'];
+
+function staffOf(row: Row): Staff {
+  const role = (STAFF_ROLES as string[]).includes(String(row.role)) ? row.role as StaffRole : 'admin';
+  return {
+    userId: row.user_id,
+    displayName: cleanString(row.display_name, 60) || String(row.user_id),
+    role,
+    status: String(row.status || 'active'),
+    personaLimit: Number(row.persona_limit) || 30
+  };
+}
+const isStaffAdmin = (staff: Staff) => staff.role === 'owner' || staff.role === 'admin';
+function staffCapabilities(staff: Staff) {
+  const admin = isStaffAdmin(staff);
+  return {
+    role: staff.role,
+    personas: admin ? 'all' : 'assigned',
+    threads: admin ? 'all' : 'assigned',
+    personaEdits: true,
+    personaPhotos: true,
+    personaScripts: true,
+    flagPhoto: true,
+    activatePersonas: admin,
+    curate: admin,
+    releasePhoto: admin,
+    verificationDecisions: admin,
+    sanctions: admin,
+    appeals: admin,
+    audit: admin,
+    notifyMembers: admin,
+    assignments: admin,
+    staff: staff.role === 'owner'
+  };
+}
+async function assignedPersonaIds(db: ReturnType<typeof createClient>, staffId: string): Promise<string[]> {
+  const { data } = await db.from('wassaa_persona_assignments')
+    .select('persona_id').eq('moderator_id', staffId).is('revoked_at', null);
+  return (data || []).map((r: Row) => String(r.persona_id));
+}
+/** Admins supervise every persona; a moderator only the ones assigned to them. */
+async function staffOwnsPersona(db: ReturnType<typeof createClient>, staff: Staff, personaId: string): Promise<boolean> {
+  if (isStaffAdmin(staff)) return true;
+  const { data } = await db.from('wassaa_persona_assignments')
+    .select('id').eq('moderator_id', staff.userId).eq('persona_id', personaId).is('revoked_at', null).maybeSingle();
+  return Boolean(data);
+}
+/** Accept a staff user id or the email they signed in with. */
+async function staffIdFrom(db: ReturnType<typeof createClient>, value: string): Promise<string | null> {
+  if (!value) return null;
+  if (isUuid(value)) return value;
+  if (!value.includes('@')) return null;
+  const { data } = await db.rpc('wassaa_staff_find', { p_email: value });
+  return data ? String(data) : null;
+}
+/** Live claim on a thread, with the holder's display name for the console. */
+async function claimInfo(db: ReturnType<typeof createClient>, matchId: string): Promise<Row | null> {
+  const { data: match } = await db.from('matches')
+    .select('claimed_by,claim_expires_at,escalated_at,escalation_note').eq('id', matchId).maybeSingle();
+  if (!match) return null;
+  let name: string | null = null;
+  if (match.claimed_by) {
+    const { data: holder } = await db.from('wassaa_admin_users')
+      .select('display_name').eq('user_id', match.claimed_by).maybeSingle();
+    name = holder?.display_name || null;
+  }
+  return {
+    claimedBy: match.claimed_by || null,
+    claimedByName: name,
+    expiresAt: match.claim_expires_at || null,
+    escalatedAt: match.escalated_at || null,
+    escalationNote: match.escalation_note || null
+  };
+}
+/**
+ * What a moderator may call. A whitelist beats "everything except the buttons
+ * we remembered to hide": a new admin route is closed to moderators until it is
+ * added here on purpose.
+ */
+const MODERATOR_PATHS = [
+  /^\/admin\/session$/,
+  /^\/admin\/overview$/,
+  /^\/admin\/activity$/,
+  /^\/admin\/npcs$/,
+  /^\/admin\/npc-facets$/,
+  /^\/admin\/npcs\/[0-9a-f-]{36}$/i,
+  /^\/admin\/npcs\/[0-9a-f-]{36}\/(photo-presign|photos|scripts|quarantine)$/i,
+  /^\/admin\/npcs\/[0-9a-f-]{36}\/scripts\/[0-9a-f-]{36}$/i,
+  /^\/admin\/threads$/,
+  /^\/admin\/threads\/[0-9a-f-]{36}\/messages$/i,
+  /^\/admin\/threads\/[0-9a-f-]{36}\/(claim|release|escalate)$/i
+];
+const moderatorPathAllowed = (path: string) => MODERATOR_PATHS.some((re) => re.test(path));
+
+
 function scriptRow(r: Row) {
   return { id: r.id, npcId: r.npc_id, kind: r.kind, intent: r.intent || undefined, body: r.body,
     position: r.position ?? 0, enabled: Boolean(r.enabled), updatedAt: r.updated_at };
@@ -427,12 +539,44 @@ async function handlePaystackWebhook(req: Request): Promise<Response> {
 }
 
 async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: string, req: Request, origin: string | null): Promise<Response> {
-  const { data: admin } = await db.from('wassaa_admin_users').select('display_name').eq('user_id', user.id).maybeSingle();
-  if (!admin) return err('Admin access is not enabled for this account.', 403, origin);
-  // Audit rows name the operator by display name. Declared here because the
-  // routes below use it before the older handlers that also log actions.
-  const actor = cleanString(admin.display_name, 60) || user.id;
-  if (path === '/admin/session' && req.method === 'GET') return json({ ok: true, storage: Boolean(await s3Client()) }, 200, origin);
+  const { data: adminRow } = await db.from('wassaa_admin_users')
+    .select('user_id,display_name,role,status,persona_limit').eq('user_id', user.id).maybeSingle();
+  if (!adminRow) return err('Admin access is not enabled for this account.', 403, origin);
+  const staff = staffOf(adminRow);
+  if (staff.status !== 'active') return err('This staff account is suspended.', 403, origin);
+  const actor = staff.displayName;
+  const admin = isStaffAdmin(staff);
+  const owner = staff.role === 'owner';
+  // Audit rows name the operator by display name and by id: two people can share
+  // a display name, and a moderator's entries must still be traceable.
+  const audit = (action: string, targetId: string | null, detail?: Row) =>
+    db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action, target_id: targetId, detail: detail || null });
+
+  // Moderators are whitelisted, not "admins minus some buttons".
+  if (!admin && !moderatorPathAllowed(path)) return err('This area is for admins.', 403, origin);
+  if (path.startsWith('/admin/staff') && !owner) {
+    // Admins may read the directory (they need names to assign personas) but
+    // only the owner can change it.
+    const readOnly = admin && path === '/admin/staff' && req.method === 'GET';
+    if (!readOnly) return err('Only the owner manages staff.', 403, origin);
+  }
+
+  if (path === '/admin/session' && req.method === 'GET') {
+    const assigned = admin ? [] : await assignedPersonaIds(db, staff.userId);
+    return json({
+      ok: true,
+      storage: Boolean(await s3Client()),
+      staff: {
+        id: staff.userId,
+        name: actor,
+        role: staff.role,
+        status: staff.status,
+        personaLimit: staff.personaLimit,
+        assignedCount: admin ? null : assigned.length,
+        capabilities: staffCapabilities(staff)
+      }
+    }, 200, origin);
+  }
   // One call powers the console header: every queue that needs a human, plus
   // persona and paid-member counts.
   if (path === '/admin/overview' && req.method === 'GET') {
@@ -442,17 +586,63 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       const { count } = await q;
       return count ?? 0;
     };
-    const [pendingVerifications, openReports, pendingAppeals, adminOwnedThreads, personas, activePersonas, curatedPersonas] = await Promise.all([
+    if (!admin) {
+      const assigned = await assignedPersonaIds(db, staff.userId);
+      const orFilter = assigned.length ? assigned.map((id) => `user_a.eq.${id},user_b.eq.${id}`).join(',') : '';
+      let myThreads: Row[] = [];
+      if (orFilter) {
+        const { data } = await db.from('matches')
+          .select('id,last_message_at,claimed_by,escalated_at').or(orFilter).limit(400);
+        myThreads = data || [];
+      }
+      let waitingReplies = 0;
+      if (myThreads.length) {
+        const { data: lastMsgs } = await db.from('messages')
+          .select('match_id,sender_id,created_at')
+          .in('match_id', myThreads.map((t: Row) => t.id))
+          .order('created_at', { ascending: false }).limit(1200);
+        const last = new Map<string, Row>();
+        for (const m of lastMsgs || []) if (!last.has(m.match_id)) last.set(m.match_id, m);
+        const assignedSet = new Set(assigned);
+        waitingReplies = myThreads.filter((t: Row) => {
+          const m = last.get(t.id);
+          return Boolean(m) && !assignedSet.has(String(m!.sender_id));
+        }).length;
+      }
+      const live = assigned.length
+        ? (await db.from('profiles').select('id', { count: 'exact', head: true }).in('id', assigned).eq('npc_active', true)).count ?? 0
+        : 0;
+      return json({
+        role: staff.role,
+        assignedPersonas: assigned.length,
+        livePersonas: live,
+        myThreads: myThreads.length,
+        waitingReplies,
+        escalated: myThreads.filter((t: Row) => Boolean(t.escalated_at)).length,
+        claimedByMe: myThreads.filter((t: Row) => t.claimed_by === staff.userId).length,
+        personaLimit: staff.personaLimit
+      }, 200, origin);
+    }
+    const [pendingVerifications, openReports, pendingAppeals, adminOwnedThreads, personas, activePersonas, curatedPersonas, staffCount, escalatedThreads, assignedSlots] = await Promise.all([
       countOf('verification_submissions', (q) => q.eq('status', 'pending')),
       countOf('reports', (q) => q.in('status', ['pending_review', 'investigating'])),
       countOf('appeals', (q) => q.eq('status', 'pending')),
       countOf('matches', (q) => q.eq('auto_state', 'admin_owned')),
       countOf('profiles', (q) => q.eq('is_npc', true)),
       countOf('profiles', (q) => q.eq('is_npc', true).eq('npc_active', true)),
-      countOf('profiles', (q) => q.eq('is_npc', true).eq('npc->>curated', 'true')),
+      countOf('profiles', (q) => q.eq('npc->>curated', 'true')),
+      countOf('wassaa_admin_users'),
+      countOf('matches', (q) => q.not('escalated_at', 'is', null)),
+      countOf('wassaa_persona_assignments', (q) => q.is('revoked_at', null))
     ]);
     const { data: paidRows } = await db.rpc('wassaa_admin_paid_members');
-    return json({ pendingVerifications, openReports, pendingAppeals, adminOwnedThreads, personas, activePersonas, curatedPersonas, paidMembers: (paidRows || []).length }, 200, origin);
+    return json({
+      role: staff.role,
+      pendingVerifications, openReports, pendingAppeals, adminOwnedThreads, personas, activePersonas, curatedPersonas,
+      paidMembers: (paidRows || []).length,
+      staffCount, escalatedThreads, assignedPersonas: assignedSlots,
+      unassignedPersonas: Math.max(0, personas - assignedSlots)
+    }, 200, origin);
   }
 
   // The console bell: the same queues the overview counts, plus who is waiting
@@ -464,6 +654,55 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       const { count } = await q;
       return count ?? 0;
     };
+    if (!admin) {
+      // A moderator's bell is their own desk: threads with a member waiting, and
+      // anything they have escalated. No member joins, no ID queue.
+      const assigned = await assignedPersonaIds(db, staff.userId);
+      const orFilter = assigned.length ? assigned.map((id) => `user_a.eq.${id},user_b.eq.${id}`).join(',') : '';
+      const { data: threads } = orFilter
+        ? await db.from('matches').select('id,user_a,user_b,claimed_by,escalated_at,escalation_note,last_message_at').or(orFilter).order('last_message_at', { ascending: false, nullsFirst: false }).limit(120)
+        : { data: [] as Row[] };
+      const ids = (threads || []).map((t: Row) => t.id);
+      const { data: lastMsgs } = ids.length
+        ? await db.from('messages').select('match_id,sender_id,text,created_at').in('match_id', ids).order('created_at', { ascending: false }).limit(600)
+        : { data: [] as Row[] };
+      const last = new Map<string, Row>();
+      for (const m of lastMsgs || []) if (!last.has(m.match_id)) last.set(m.match_id, m);
+      const assignedSet = new Set(assigned);
+      const peopleIds = new Set<string>();
+      for (const t of threads || []) { peopleIds.add(t.user_a); peopleIds.add(t.user_b); }
+      const names = new Map<string, string>();
+      if (peopleIds.size) {
+        const { data: people } = await db.from('profiles').select('id,name').in('id', [...peopleIds]);
+        for (const p of people || []) names.set(p.id, String(p.name || 'Member'));
+      }
+      const waiting = (threads || []).filter((t: Row) => {
+        const m = last.get(t.id);
+        return Boolean(m) && !assignedSet.has(String(m!.sender_id));
+      });
+      return json({
+        role: staff.role,
+        counts: { threads: (threads || []).length, waiting: waiting.length, escalated: (threads || []).filter((t: Row) => Boolean(t.escalated_at)).length },
+        threads: waiting.slice(0, 8).map((t: Row) => {
+          const npc = assignedSet.has(t.user_a) ? t.user_a : t.user_b;
+          const member = npc === t.user_a ? t.user_b : t.user_a;
+          return {
+            id: t.id, tab: 'threads', at: last.get(t.id)?.created_at || t.last_message_at,
+            title: `${names.get(npc) || 'Persona'} ↔ ${names.get(member) || 'Member'}`,
+            detail: last.get(t.id)?.text ? String(last.get(t.id)!.text).slice(0, 90) : 'Member is waiting for a reply'
+          };
+        }),
+        escalations: (threads || []).filter((t: Row) => Boolean(t.escalated_at)).slice(0, 8).map((t: Row) => {
+          const npc = assignedSet.has(t.user_a) ? t.user_a : t.user_b;
+          const member = npc === t.user_a ? t.user_b : t.user_a;
+          return {
+            id: t.id, tab: 'threads', at: t.escalated_at,
+            title: `${names.get(npc) || 'Persona'} ↔ ${names.get(member) || 'Member'}`,
+            detail: t.escalation_note || 'Escalated to an admin'
+          };
+        })
+      }, 200, origin);
+    }
     const [verifications, reports, appeals, members, pendingVerifications, openReports, pendingAppeals] = await Promise.all([
       db.from('verification_submissions').select('id,user_id,status,submitted_at').eq('status', 'pending').order('submitted_at', { ascending: false }).limit(8),
       db.from('reports').select('id,reporter_id,reported_user_id,category_label,status,created_at').in('status', ['pending_review', 'investigating']).order('created_at', { ascending: false }).limit(8),
@@ -530,7 +769,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     });
     if (error) return err('Could not deliver the notification.', 500, origin);
     await db.from('admin_audit').insert({
-      admin_id: actor,
+      admin_id: actor, actor_user_id: user.id,
       action: 'notification.delivered',
       target_id: recipientId,
       detail: { kind, threadId, preview: text.slice(0, 80) }
@@ -605,7 +844,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       await db.from('verification_submissions').update({ status: 'pending', reviewed_at: null, reviewed_by: null, review_note: null }).eq('id', resolved.id);
       return err('Could not apply the verification decision. Nothing changed; retry.', 500, origin);
     }
-    await db.from('admin_audit').insert({ admin_id: actor, action: approve ? 'verification.approved' : 'verification.rejected', target_id: resolved.id, detail: { userId: sub.user_id, note, regionAttested: approve ? reviewedProfile?.country_code || null : null } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: approve ? 'verification.approved' : 'verification.rejected', target_id: resolved.id, detail: { userId: sub.user_id, note, regionAttested: approve ? reviewedProfile?.country_code || null : null } });
     const { data: p } = await db.from('profiles').select('id,name,verification_status').eq('id', sub.user_id).maybeSingle();
     return json({ success: true, submission: { id: resolved.id, status: resolved.status, reviewedAt: resolved.reviewed_at }, user: p }, 200, origin);
   }
@@ -628,7 +867,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const { data: report, error } = await db.from('reports').update(patch).eq('id', reportMatch[1]).select('*').maybeSingle();
     if (error) return err('Could not update report.', 500, origin);
     if (!report) return err('Report not found.', 404, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: 'report.status', target_id: report.id, detail: { status, reviewNote: patch.review_note || undefined } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: 'report.status', target_id: report.id, detail: { status, reviewNote: patch.review_note || undefined } });
     return json({ success: true, report: reportRow(report) }, 200, origin);
   }
   if (blockMatch && req.method === 'POST') {
@@ -647,7 +886,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       : { blocked_us: false, account_status: 'active', restriction_reason: null, restricted_at: null, restricted_by: null, updated_at: now };
     const { error } = await db.from('profiles').update(patch).eq('id', target.id);
     if (error) return err('Could not update the block.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: blocked ? 'user.blocked' : 'user.unblocked', target_id: target.id, detail: { reason: blocked ? reason : null } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: blocked ? 'user.blocked' : 'user.unblocked', target_id: target.id, detail: { reason: blocked ? reason : null } });
     return json({ success: true, user: { id: target.id, name: target.name, blocked, accountStatus: blocked ? 'banned' : 'active' } }, 200, origin);
   }
   if (path === '/admin/audit' && req.method === 'GET') {
@@ -693,7 +932,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       if (purge !== 'ok') return err('Account media could not be securely deleted; nothing was removed. Retry.', 502, origin);
       const { error: reportRedactionError } = await db.from('reports').update({ reported_user_id: null, details: '[Report subject account deleted]', service_branch: null }).eq('reported_user_id', target.id);
       if (reportRedactionError) return err('Account could not be deleted.', 500, origin);
-      await db.from('admin_audit').insert({ admin_id: actor, action: 'user.deleted', target_id: target.id, detail: { reason: reason || null } });
+      await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: 'user.deleted', target_id: target.id, detail: { reason: reason || null } });
       await db.rpc('wassaa_anonymize_admin_audit', { p_user: target.id });
       const { error: deleteError } = await db.from('profiles').delete().eq('id', target.id);
       if (deleteError) return err('Account could not be deleted.', 500, origin);
@@ -721,7 +960,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
         };
     const { data: updated, error } = await db.from('profiles').update(patch).eq('id', target.id).select('id,account_status').maybeSingle();
     if (error || !updated) return err('Could not apply the account action.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: `user.${action}`, target_id: target.id, detail: { reason: reason || null } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: `user.${action}`, target_id: target.id, detail: { reason: reason || null } });
     return json({ success: true, action, accountStatus: updated.account_status }, 200, origin);
   }
   // ---- Report review context: full accounts + face-vs-ID + complete DM history ----
@@ -812,7 +1051,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
         return err('The account could not be reinstated; the appeal is still pending. Retry.', 500, origin);
       }
     }
-    await db.from('admin_audit').insert({ admin_id: actor, action: grant ? 'appeal.granted' : 'appeal.denied', target_id: appeal.profile_id, detail: { appealId: appeal.id, note } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: grant ? 'appeal.granted' : 'appeal.denied', target_id: appeal.profile_id, detail: { appealId: appeal.id, note } });
     return json({ success: true, status: grant ? 'granted' : 'denied' }, 200, origin);
   }
   // ---- NPC threads: monitor + send as the NPC (staff-operated conversations) ----
@@ -820,8 +1059,13 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const params = reqUrl(req).searchParams;
     const state = params.get('state') || '';
     const onlyPaid = params.get('paid') === '1';
+    // A moderator sees the threads of the personas they hold, nothing else.
+    const mineIds = admin ? null : await assignedPersonaIds(db, staff.userId);
+    if (mineIds && !mineIds.length) return json({ threads: [], paidCount: 0, role: staff.role }, 200, origin);
     let q = db.from('matches').select('*').order('created_at', { ascending: false }).limit(200);
     if (['none','active','quiet','admin_owned'].includes(state)) q = q.eq('auto_state', state);
+    if (params.get('escalated') === '1') q = q.not('escalated_at', 'is', null);
+    if (mineIds) q = q.or(mineIds.map((id) => `user_a.eq.${id},user_b.eq.${id}`).join(','));
     const { data: matches, error } = await q;
     if (error) return err('Could not load threads.', 500, origin);
     const sideIds = [...new Set((matches || []).flatMap((m: Row) => [m.user_a, m.user_b]))];
@@ -829,6 +1073,21 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     for (let i = 0; i < sideIds.length; i += 100) {
       const { data } = await db.from('profiles').select('id,name,is_npc,npc_active,deleted_at,country_code,verification_status').in('id', sideIds.slice(i, i + 100));
       for (const p of data || []) profiles.set(p.id, p);
+    }
+    // Last line per thread: who spoke last decides whether a member is waiting.
+    const matchIds = (matches || []).map((m: Row) => m.id);
+    const lastMessages = new Map<string, Row>();
+    if (matchIds.length) {
+      const { data: recent } = await db.from('messages')
+        .select('match_id,sender_id,kind,text,created_at,sent_by_staff,sent_by_name')
+        .in('match_id', matchIds).order('created_at', { ascending: false }).limit(800);
+      for (const m of recent || []) if (!lastMessages.has(m.match_id)) lastMessages.set(m.match_id, m);
+    }
+    const claimIds = [...new Set((matches || []).map((m: Row) => m.claimed_by).filter(Boolean))];
+    const claimNames = new Map<string, string>();
+    if (claimIds.length) {
+      const { data: holders } = await db.from('wassaa_admin_users').select('user_id,display_name').in('user_id', claimIds);
+      for (const r of holders || []) claimNames.set(String(r.user_id), String(r.display_name || 'Staff'));
     }
     // Paying members are the owner's priority: their persona threads sort first.
     const { data: paidRows } = await db.rpc('wassaa_admin_paid_members');
@@ -840,15 +1099,28 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       const member = npc.id === m.user_a ? b : a;
       if (!member) return [];
       const pay = paid.get(member.id);
+      const last = lastMessages.get(m.id);
       return [{ id: m.id, autoState: m.auto_state, takenOverBy: m.taken_over_by || undefined, createdAt: m.created_at,
         autoSpent: m.auto_spent || 0, lastMessageAt: m.last_message_at || m.created_at,
         paid: Boolean(pay), purchasedAt: pay?.purchased_at || undefined, creditsBought: Number(pay?.credits_bought || 0),
         member: { id: member.id, name: member.name, countryCode: member.country_code || 'NG', verified: member.verification_status === 'verified' },
-        npc: { id: npc.id, name: npc.name } }];
+        npc: { id: npc.id, name: npc.name },
+        claimedBy: m.claimed_by || undefined,
+        claimedByName: m.claimed_by ? claimNames.get(String(m.claimed_by)) || 'Staff' : undefined,
+        claimedByMe: m.claimed_by === staff.userId,
+        claimLive: Boolean(m.claimed_by && m.claim_expires_at && Date.parse(m.claim_expires_at) > Date.now()),
+        claimExpiresAt: m.claim_expires_at || undefined,
+        escalatedAt: m.escalated_at || undefined,
+        escalationNote: m.escalation_note || undefined,
+        waiting: Boolean(last) && String(last!.sender_id) === String(member.id),
+        lastMessage: last ? {
+          senderId: last.sender_id, kind: last.kind, text: last.text || undefined, at: last.created_at,
+          sentByName: last.sent_by_name || undefined
+        } : null }];
     });
     if (onlyPaid) threads = threads.filter((t) => t.paid);
     threads.sort((x, y) => (Number(y.paid) - Number(x.paid)) || (Date.parse(y.lastMessageAt) - Date.parse(x.lastMessageAt)));
-    return json({ threads, paidCount: threads.filter((t) => t.paid).length }, 200, origin);
+    return json({ threads, paidCount: threads.filter((t) => t.paid).length, role: staff.role }, 200, origin);
   }
   if (threadMessagesMatch && (req.method === 'GET' || req.method === 'POST')) {
     const matchId = threadMessagesMatch[1];
@@ -858,6 +1130,9 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const npc = (sides || []).find((p: Row) => p.is_npc && !p.deleted_at);
     const member = (sides || []).find((p: Row) => p.id !== npc?.id);
     if (!npc) return err('This thread has no NPC participant.', 409, origin);
+    if (!admin && !(await staffOwnsPersona(db, staff, npc.id))) {
+      return err('This thread belongs to a persona that is not assigned to you.', 403, origin);
+    }
     if (req.method === 'GET') {
       const since = reqUrl(req).searchParams.get('since');
       let q = db.from('messages').select('*').eq('match_id', matchId).order('created_at', { ascending: true }).limit(500);
@@ -866,17 +1141,82 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       if (error) return err('Could not load messages.', 500, origin);
       return json({
         messages: await Promise.all((msgs || []).map(async (m: Row) => {
-          if (m.kind === 'photo' && isStorageKey(m.media_url)) return { ...messageRow(m), mediaUrl: await presignedGet(m.media_url) || undefined };
-          return messageRow(m);
+          if (m.kind === 'photo' && isStorageKey(m.media_url)) return { ...staffMessageRow(m), mediaUrl: await presignedGet(m.media_url) || undefined };
+          return staffMessageRow(m);
         })),
-        npc: { id: npc.id, name: npc.name }, member: member ? { id: member.id, name: member.name } : null, autoState: match.auto_state
+        npc: { id: npc.id, name: npc.name }, member: member ? { id: member.id, name: member.name } : null,
+        autoState: match.auto_state, claim: await claimInfo(db, matchId), role: staff.role
       }, 200, origin);
     }
     const b = await bodyJson(req), text = cleanString(b.text, 4000);
     if (!text.trim()) return err('Message body required.', 400, origin);
-    const { data: msg, error } = await db.from('messages').insert({ match_id: matchId, sender_id: npc.id, kind: 'text', text }).select('*').single();
+    // The persona engine can run hot; a human typing as a persona should not.
+    const { data: withinLimit } = await db.rpc('wassaa_consume_rate_limit', { p_actor: staff.userId, p_bucket: 'staff_message', p_max: 30, p_window_seconds: 60 });
+    if (!withinLimit) return err('Too many messages in a minute. Take a breath and try again.', 429, origin);
+    // Claim + auto_state + insert happen in one locked transition, so two
+    // operators tapping send cannot both get through.
+    const { data: result, error } = await db.rpc('wassaa_staff_send', { p_match: matchId, p_staff: staff.userId, p_name: actor, p_text: text });
     if (error) return err('Could not send message.', 500, origin);
-    return json({ success: true, message: messageRow(msg) }, 200, origin);
+    const code = String((result as Row | null)?.error || '');
+    if (code === 'not_assigned') return err('This thread belongs to a persona that is not assigned to you.', 403, origin);
+    if (code === 'claimed') return err('Another operator is already replying in this thread. Claim it when their lease ends.', 409, origin);
+    if (code === 'suspended' || code === 'not_staff') return err('Your staff account cannot reply right now.', 403, origin);
+    if (code === 'no_persona') return err('This thread has no NPC participant.', 409, origin);
+    if (code === 'empty') return err('Message body required.', 400, origin);
+    if (code) return err('Could not send message.', 409, origin);
+    await audit('thread.message', matchId, { npcId: npc.id, chars: text.length });
+    return json({
+      success: true,
+      message: staffMessageRow((result as Row).message || {}),
+      claim: { claimedBy: staff.userId, claimedByName: actor, expiresAt: (result as Row).claimExpiresAt }
+    }, 200, origin);
+  }
+  // Claim = a 30-minute lease so one operator owns the reply. Escalate = hand
+  // the thread to an admin without giving up the claim.
+  const threadActionMatch = path.match(/^\/admin\/threads\/([0-9a-f-]+)\/(claim|release|escalate)$/i);
+  if (threadActionMatch) {
+    const [, matchId, action] = threadActionMatch;
+    const { data: match } = await db.from('matches').select('*').eq('id', matchId).maybeSingle();
+    if (!match) return err('Thread not found.', 404, origin);
+    const { data: sides } = await db.from('profiles').select('id,is_npc,deleted_at').in('id', [match.user_a, match.user_b]);
+    const npc = (sides || []).find((p: Row) => p.is_npc && !p.deleted_at);
+    if (!npc) return err('This thread has no NPC participant.', 409, origin);
+    if (!admin && !(await staffOwnsPersona(db, staff, npc.id))) return err('This thread is not yours.', 403, origin);
+    const nowIso = new Date().toISOString();
+    if (action === 'claim' && req.method === 'POST') {
+      const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+      const { data: claimed } = await db.from('matches')
+        .update({ claimed_by: staff.userId, claim_expires_at: expires })
+        .eq('id', matchId)
+        .or(`claimed_by.is.null,claimed_by.eq.${staff.userId},claim_expires_at.lt.${nowIso}`)
+        .select('id').maybeSingle();
+      if (!claimed) {
+        const info = await claimInfo(db, matchId);
+        return err(`This thread is with ${info?.claimedByName || 'another operator'} for a little longer.`, 409, origin);
+      }
+      await audit('thread.claimed', matchId, { expiresAt: expires });
+      return json({ success: true, claim: await claimInfo(db, matchId) }, 200, origin);
+    }
+    if (action === 'release' && req.method === 'POST') {
+      if (!admin && match.claimed_by !== staff.userId) return err('You can only release a thread you claimed.', 403, origin);
+      await db.from('matches').update({ claimed_by: null, claim_expires_at: null }).eq('id', matchId);
+      await audit('thread.released', matchId, {});
+      return json({ success: true }, 200, origin);
+    }
+    if (action === 'escalate' && req.method === 'POST') {
+      const b = await bodyJson(req);
+      const note = cleanString(b.note, 300);
+      if (!note) return err('Add a short note so the admin knows what you need.', 400, origin);
+      await db.from('matches').update({ escalated_at: nowIso, escalation_note: note }).eq('id', matchId);
+      await audit('thread.escalated', matchId, { note });
+      return json({ success: true }, 200, origin);
+    }
+    if (action === 'escalate' && req.method === 'DELETE') {
+      await db.from('matches').update({ escalated_at: null, escalation_note: null }).eq('id', matchId);
+      await audit('thread.escalation_cleared', matchId, {});
+      return json({ success: true }, 200, origin);
+    }
+    return err('Unsupported thread action.', 405, origin);
   }
   // ---- NPC manager: list, edit persona, replace photos ----
   if (path === '/admin/npcs' && req.method === 'GET') {
@@ -890,6 +1230,10 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const review = (params.get('review') || '').trim();
     const limit = Math.min(200, Math.max(20, Number(params.get('limit')) || 60));
     const offset = Math.max(0, Number(params.get('offset')) || 0);
+    const assignedFilter = (params.get('assigned') || '').trim();
+    // A moderator's deck is their assignment list, full stop. Admins can ask for
+    // one moderator's slice or the personas nobody has picked up yet.
+    const scopedIds = admin ? null : await assignedPersonaIds(db, staff.userId);
     let q = db.from('profiles').select('id,name,birth_date,gender,pronouns,company_or_org,duty_station,education_level,alma_mater,city,state,country_code,profession_category,profession_title,service,org_role,skill,class_of_service,bio,photos,interests,dating_goal,prompts,lifestyle,values_family,verification_status,npc_active,npc_ai_enabled,npc_photo_review,npc_quarantine_reason,npc,created_at', { count: 'exact' })
       .eq('is_npc', true);
     if (search) q = q.ilike('name', `%${search.replace(/[%_]/g, '')}%`);
@@ -902,8 +1246,43 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     if (review === 'quarantine') q = q.eq('npc_photo_review', 'quarantine');
     if (review === 'ok') q = q.eq('npc_photo_review', 'ok');
     if (service) q = q.ilike('service', `%${service.replace(/[%_]/g, '')}%`);
+    if (scopedIds) {
+      if (!scopedIds.length) return json({ npcs: [], total: 0, limit, offset, role: staff.role }, 200, origin);
+      q = q.in('id', scopedIds);
+    } else if (assignedFilter === 'none') {
+      const { data: held } = await db.from('wassaa_persona_assignments').select('persona_id').is('revoked_at', null);
+      const heldIds = (held || []).map((r: Row) => String(r.persona_id));
+      if (heldIds.length) q = q.not('id', 'in', `(${heldIds.join(',')})`);
+    } else if (isUuid(assignedFilter)) {
+      const { data: held } = await db.from('wassaa_persona_assignments').select('persona_id').eq('moderator_id', assignedFilter).is('revoked_at', null);
+      const heldIds = (held || []).map((r: Row) => String(r.persona_id));
+      if (!heldIds.length) return json({ npcs: [], total: 0, limit, offset }, 200, origin);
+      q = q.in('id', heldIds);
+    }
     const { data: npcs, error, count } = await q.order('created_at', { ascending: false }).range(offset, offset + limit - 1);
     if (error) return err('Could not load NPCs.', 500, origin);
+    // Who holds each persona on this page, so the console can show an owner chip
+    // and admins can reassign without opening a sheet.
+    const pageIds = (npcs || []).map((p: Row) => p.id);
+    const assignees = new Map<string, Row>();
+    if (pageIds.length) {
+      const { data: rows } = await db.from('wassaa_persona_assignments')
+        .select('persona_id,moderator_id,assigned_at')
+        .is('revoked_at', null).in('persona_id', pageIds);
+      const modIds = [...new Set((rows || []).map((r: Row) => String(r.moderator_id)))];
+      const { data: staffRows } = modIds.length
+        ? await db.from('wassaa_admin_users').select('user_id,display_name').in('user_id', modIds)
+        : { data: [] as Row[] };
+      const names = new Map((staffRows || []).map((r: Row) => [String(r.user_id), String(r.display_name || 'Staff')]));
+      for (const r of rows || []) {
+        assignees.set(r.persona_id, {
+          id: r.moderator_id,
+          name: names.get(String(r.moderator_id)) || 'Staff',
+          assignedAt: r.assigned_at,
+          mine: r.moderator_id === staff.userId
+        });
+      }
+    }
     return json({ npcs: (npcs || []).map((p: Row) => ({
       id: p.id, name: p.name, age: ageOf(p.birth_date), birthDate: p.birth_date, gender: p.gender, pronouns: p.pronouns,
       city: p.city, state: p.state, countryCode: p.country_code || 'NG', companyOrOrg: p.company_or_org, dutyStation: p.duty_station,
@@ -914,13 +1293,20 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       verificationStatus: p.verification_status, active: p.npc_active, persona: p.npc || {},
       curated: Boolean((p.npc || {}).curated),
       aiEnabled: Boolean(p.npc_ai_enabled), photoReview: p.npc_photo_review || 'ok',
-      quarantineReason: p.npc_quarantine_reason || undefined, createdAt: p.created_at
-    })), total: count ?? 0, limit, offset }, 200, origin);
+      quarantineReason: p.npc_quarantine_reason || undefined, createdAt: p.created_at,
+      assignedTo: assignees.get(p.id) || null
+    })), total: count ?? 0, limit, offset, role: staff.role }, 200, origin);
   }
   // Facets for the persona filters: every country, class, service and gender in
   // the deck with a count, so the console never hardcodes a list.
   if (path === '/admin/npc-facets' && req.method === 'GET') {
-    const { data, error } = await db.from('profiles').select('country_code,class_of_service,service,gender,npc_active').eq('is_npc', true).limit(3000);
+    let facetQuery = db.from('profiles').select('id,country_code,class_of_service,service,gender,npc_active').eq('is_npc', true);
+    if (!admin) {
+      const mine = await assignedPersonaIds(db, staff.userId);
+      if (!mine.length) return json({ countries: [], classes: [], services: [], genders: [], active: 0, total: 0 }, 200, origin);
+      facetQuery = facetQuery.in('id', mine);
+    }
+    const { data, error } = await facetQuery.limit(3000);
     if (error) return err('Could not load persona facets.', 500, origin);
     const tally = (values: (string | null)[]) => {
       const map = new Map<string, number>();
@@ -941,6 +1327,30 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const { data: npc } = await db.from('profiles').select('id,is_npc,org_role,class_of_service,npc,photos,npc_photo_review').eq('id', npcOneMatch[1]).maybeSingle();
     if (!npc) return err('NPC not found.', 404, origin);
     if (!npc.is_npc) return err('This profile is not an NPC.', 409, origin);
+    if (!admin && !(await staffOwnsPersona(db, staff, npc.id))) {
+      return err('This persona is not assigned to you. Ask an admin for it in Staff.', 403, origin);
+    }
+    if (!admin) {
+      // Editing the character is the moderator's job. Publishing it, sealing it
+      // as verified, turning on AI or lifting a photo quarantine is not: those
+      // change what members see and who is accountable for it.
+      const blocked: string[] = [];
+      if (b.active !== undefined) blocked.push('activation');
+      if (b.curated !== undefined) blocked.push('the curated set');
+      if (b.aiEnabled !== undefined) blocked.push('AI replies');
+      if (b.verificationStatus !== undefined) blocked.push('the verified seal');
+      if (b.photoReview === 'ok') blocked.push('releasing a photo');
+      if (blocked.length) {
+        return err(`Only admins can change ${blocked.join(', ')}. Flag the persona for review instead.`, 403, origin);
+      }
+      if (b.persona && typeof b.persona === 'object' && !Array.isArray(b.persona)) {
+        const doc = { ...(b.persona as Row) };
+        delete doc.curated;
+        delete doc.curatedAt;
+        delete doc.photoState;
+        b.persona = doc;
+      }
+    }
     const update: Row = {};
     // Personas are edited with the same rules a member's own PATCH follows, so
     // nothing can be typed here that the member side could not produce.
@@ -1067,7 +1477,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const { data: updated, error } = await db.from('profiles').update(update).eq('id', npcOneMatch[1]).select('id').maybeSingle();
     if (error || !updated) return err('Could not update NPC.', 500, origin);
     const auditAction = typeof b.curated === 'boolean' ? (b.curated ? 'npc.curated' : 'npc.uncurated') : 'npc.updated';
-    await db.from('admin_audit').insert({ admin_id: actor, action: auditAction, target_id: npcOneMatch[1], detail: { fields: Object.keys(update).filter((k) => k !== 'updated_at') } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: auditAction, target_id: npcOneMatch[1], detail: { fields: Object.keys(update).filter((k) => k !== 'updated_at') } });
     return json({ success: true }, 200, origin);
   }
   if (npcPresignMatch && req.method === 'POST') {
@@ -1077,6 +1487,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     if (!Number.isSafeInteger(contentLength) || contentLength < 1 || contentLength > 6 * 1024 * 1024) return err('Image size must be between 1 byte and 6 MB.', 413, origin);
     const { data: npc } = await db.from('profiles').select('id,is_npc').eq('id', npcPresignMatch[1]).maybeSingle();
     if (!npc?.is_npc) return err('NPC not found.', 404, origin);
+    if (!admin && !(await staffOwnsPersona(db, staff, npc.id))) return err('This persona is not assigned to you.', 403, origin);
     const client = await s3Client(), publicBucket = Deno.env.get('R2_PUBLIC_BUCKET');
     if (!client || !publicBucket) return err('Object storage is not configured.', 503, origin);
     const key = objectKey('photo', npc.id, contentType);
@@ -1092,6 +1503,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     // prefix (or a value already on the row) can be saved.
     const photos = ownedPhotoValues(npcPhotosMatch[1], b.photos, npc?.photos || []);
     if (!npc?.is_npc) return err('NPC not found.', 404, origin);
+    if (!admin && !(await staffOwnsPersona(db, staff, npc.id))) return err('This persona is not assigned to you.', 403, origin);
     // A photo uploaded by a human is the final word: mark the persona `manual`
     // so the automatic pool dealer never re-deals over it.
     const persona = { ...(npc.npc || {}) };
@@ -1100,17 +1512,21 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const update: Row = { photos, npc: persona, updated_at: new Date().toISOString() };
     // A person chose this face, so an automated quarantine no longer applies.
     // Clearing the photo list sends the persona back to the pool instead.
-    if (hasPhotos) {
+    // A moderator's upload is still a proposal: an admin releases the photo and
+    // decides when the persona goes live.
+    if (hasPhotos && admin) {
       update.npc_photo_review = 'ok';
       update.npc_quarantine_reason = null;
       update.npc_quarantined_at = null;
     }
     // Curated profiles stay staged while they are being edited; the curator
     // pushes them live with Activate. Pool personas still go live on upload.
-    update.npc_active = persona.curated ? (hasPhotos ? Boolean(npc.npc_active) : false) : hasPhotos;
+    update.npc_active = admin
+      ? (persona.curated ? (hasPhotos ? Boolean(npc.npc_active) : false) : hasPhotos)
+      : Boolean(npc.npc_active);
     const { error } = await db.from('profiles').update(update).eq('id', npc.id);
     if (error) return err('Could not update NPC photos.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.photos', target_id: npc.id, detail: { count: photos.length, active: update.npc_active, review: hasPhotos ? 'ok' : undefined } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: 'npc.photos', target_id: npc.id, detail: { count: photos.length, active: update.npc_active, review: hasPhotos && admin ? 'ok' : undefined } });
     return json({ success: true, photos }, 200, origin);
   }
   // ---- Persona scripts: every line a persona can say, editable by staff ----
@@ -1121,6 +1537,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     const npcId = npcScriptsMatch[1];
     const { data: npc } = await db.from('profiles').select('id,is_npc').eq('id', npcId).maybeSingle();
     if (!npc?.is_npc) return err('NPC not found.', 404, origin);
+    if (!admin && !(await staffOwnsPersona(db, staff, npcId))) return err('This persona is not assigned to you.', 403, origin);
 
     if (req.method === 'GET') {
       const { data, error } = await db.from('npc_scripts').select('*').eq('npc_id', npcId)
@@ -1141,17 +1558,18 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       .insert({ npc_id: npcId, kind, intent, body: text, position })
       .select('id').single();
     if (error) return err('Could not save persona script.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.script_created', target_id: npcId, detail: { kind, intent } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: 'npc.script_created', target_id: npcId, detail: { kind, intent } });
     return json({ success: true, id: inserted?.id }, 200, origin);
   }
   if (npcScriptOneMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
     const [, npcId, scriptId] = npcScriptOneMatch;
     const { data: existing } = await db.from('npc_scripts').select('id,npc_id').eq('id', scriptId).eq('npc_id', npcId).maybeSingle();
     if (!existing) return err('Script not found.', 404, origin);
+    if (!admin && !(await staffOwnsPersona(db, staff, npcId))) return err('This persona is not assigned to you.', 403, origin);
     if (req.method === 'DELETE') {
       const { error } = await db.from('npc_scripts').delete().eq('id', scriptId).eq('npc_id', npcId);
       if (error) return err('Could not delete script.', 500, origin);
-      await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.script_deleted', target_id: npcId, detail: { scriptId } });
+      await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: 'npc.script_deleted', target_id: npcId, detail: { scriptId } });
       return json({ success: true }, 200, origin);
     }
     const b = await bodyJson(req);
@@ -1178,7 +1596,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     if (Object.keys(patch).length === 1) return err('Nothing to update.', 400, origin);
     const { error } = await db.from('npc_scripts').update(patch).eq('id', scriptId).eq('npc_id', npcId);
     if (error) return err('Could not update script.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: 'npc.script_updated', target_id: npcId, detail: { scriptId, fields: Object.keys(patch) } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: 'npc.script_updated', target_id: npcId, detail: { scriptId, fields: Object.keys(patch) } });
     return json({ success: true }, 200, origin);
   }
 
@@ -1189,6 +1607,10 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     if (typeof b.quarantine !== 'boolean') return err('quarantine must be true or false.', 400, origin);
     const { data: npc } = await db.from('profiles').select('id,is_npc').eq('id', npcId).maybeSingle();
     if (!npc?.is_npc) return err('NPC not found.', 404, origin);
+    if (!admin) {
+      if (!(await staffOwnsPersona(db, staff, npcId))) return err('This persona is not assigned to you.', 403, origin);
+      if (!b.quarantine) return err('Only admins can release a quarantined photo.', 403, origin);
+    }
     const reason = b.quarantine ? (cleanString(b.reason, 200) || 'Photo reads as generated') : null;
     const patch: Row = {
       npc_photo_review: b.quarantine ? 'quarantine' : 'ok',
@@ -1201,7 +1623,7 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     if (b.quarantine) patch.npc_active = false;
     const { error } = await db.from('profiles').update(patch).eq('id', npcId);
     if (error) return err('Could not update photo review.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: b.quarantine ? 'npc.quarantined' : 'npc.released', target_id: npcId, detail: { reason } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: b.quarantine ? 'npc.quarantined' : 'npc.released', target_id: npcId, detail: { reason } });
     return json({ success: true, quarantined: b.quarantine, active: b.quarantine ? false : undefined }, 200, origin);
   }
   if (path === '/admin/npc-quarantine' && req.method === 'POST') {
@@ -1219,10 +1641,172 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
     if (b.quarantine) patch.npc_active = false;
     const { error, count } = await db.from('profiles').update(patch, { count: 'exact' }).in('id', ids).eq('is_npc', true);
     if (error) return err('Could not update photo review.', 500, origin);
-    await db.from('admin_audit').insert({ admin_id: actor, action: b.quarantine ? 'npc.quarantined_bulk' : 'npc.released_bulk', target_id: null, detail: { count: count || ids.length } });
+    await db.from('admin_audit').insert({ admin_id: actor, actor_user_id: user.id, action: b.quarantine ? 'npc.quarantined_bulk' : 'npc.released_bulk', target_id: null, detail: { count: count || ids.length } });
     return json({ success: true, updated: count || ids.length, quarantined: b.quarantine }, 200, origin);
   }
 
+  // ---- Persona assignments: admins allocate the deck, moderators work it ----
+  if (path === '/admin/npcs/assign' && req.method === 'POST') {
+    if (!admin) return err('Only admins allocate personas.', 403, origin);
+    const b = await bodyJson(req);
+    const ids = Array.isArray(b.ids) ? [...new Set(b.ids.filter(isUuid))].slice(0, 100) : [];
+    if (!ids.length) return err('Choose at least one persona.', 400, origin);
+    const target = cleanString(b.moderatorId || b.email || '', 160);
+    let moderatorId: string | null = null;
+    if (target) {
+      moderatorId = await staffIdFrom(db, target);
+      if (!moderatorId) return err('No account with that email has signed in yet. Ask them to sign in once, then add them in Staff.', 404, origin);
+    }
+    let assigned = 0, skipped = 0, limitHit = 0;
+    for (const id of ids) {
+      const { data: result } = await db.rpc('wassaa_assign_persona', {
+        p_persona: id, p_moderator: moderatorId, p_actor: actor, p_actor_id: user.id, p_note: null
+      });
+      if ((result as Row | null)?.ok) assigned += 1;
+      else {
+        skipped += 1;
+        if ((result as Row | null)?.error === 'limit') limitHit += 1;
+      }
+    }
+    await audit(moderatorId ? 'npc.assigned_bulk' : 'npc.unassigned_bulk', null, { requested: ids.length, assigned, skipped, moderatorId });
+    return json({ success: true, assigned, skipped, limitHit }, 200, origin);
+  }
+  const assignMatch = path.match(/^\/admin\/npcs\/([0-9a-f-]+)\/assign$/i);
+  if (assignMatch && req.method === 'POST') {
+    if (!admin) return err('Only admins allocate personas.', 403, origin);
+    const b = await bodyJson(req);
+    const target = cleanString(b.moderatorId || b.email || '', 160);
+    let moderatorId: string | null = null;
+    if (target) {
+      moderatorId = await staffIdFrom(db, target);
+      if (!moderatorId) return err('No account with that email has signed in yet. Ask them to sign in once, then add them in Staff.', 404, origin);
+    }
+    const { data: result, error } = await db.rpc('wassaa_assign_persona', {
+      p_persona: assignMatch[1], p_moderator: moderatorId, p_actor: actor, p_actor_id: user.id,
+      p_note: cleanString(b.note, 300) || null
+    });
+    if (error) return err('Could not assign persona.', 500, origin);
+    const code = String((result as Row | null)?.error || '');
+    if (code === 'limit') {
+      return err(`That moderator already holds ${(result as Row).active} personas (limit ${(result as Row).limit}). Raise their limit or free a persona first.`, 409, origin);
+    }
+    if (code === 'not_persona') return err('Choose an NPC persona.', 404, origin);
+    if (code === 'not_staff') return err('That account is not staff.', 404, origin);
+    if (code === 'bad_role' || code === 'suspended') return err('That account cannot manage personas right now.', 409, origin);
+    await audit(moderatorId ? 'npc.assigned' : 'npc.unassigned', assignMatch[1], { moderatorId });
+    return json({ success: true, assigned: Boolean(moderatorId), result }, 200, origin);
+  }
+
+  // ---- Staff directory: owner only (the gate above already enforces it) ----
+  if (path === '/admin/staff' && req.method === 'GET') {
+    const { data: rows, error } = await db.from('wassaa_admin_users')
+      .select('user_id,display_name,role,status,persona_limit,created_at,created_by,last_seen_at')
+      .order('created_at', { ascending: true });
+    if (error) return err('Could not load staff.', 500, origin);
+    const { data: held } = await db.from('wassaa_persona_assignments').select('moderator_id').is('revoked_at', null);
+    const counts = new Map<string, number>();
+    for (const r of held || []) counts.set(String(r.moderator_id), (counts.get(String(r.moderator_id)) || 0) + 1);
+    return json({
+      role: staff.role,
+      staff: (rows || []).map((r: Row) => ({
+        id: r.user_id, name: r.display_name, role: r.role, status: r.status,
+        personaLimit: r.persona_limit, assigned: counts.get(String(r.user_id)) || 0,
+        createdAt: r.created_at, createdBy: r.created_by || undefined, lastSeenAt: r.last_seen_at || undefined,
+        isYou: r.user_id === staff.userId
+      }))
+    }, 200, origin);
+  }
+  if (path === '/admin/staff' && req.method === 'POST') {
+    const b = await bodyJson(req);
+    const email = cleanString(b.email, 160).toLowerCase();
+    if (!email.includes('@')) return err('Enter the email they sign in with.', 400, origin);
+    const found = await staffIdFrom(db, email);
+    if (!found) return err('That person has not signed in yet. Ask them to sign in once, then add them here.', 404, origin);
+    const role = b.role === 'admin' ? 'admin' : 'moderator';
+    const displayName = cleanString(b.displayName, 60) || email.split('@')[0];
+    const limit = Math.min(200, Math.max(1, Number(b.personaLimit) || 30));
+    const { data: existing } = await db.from('wassaa_admin_users').select('user_id').eq('user_id', found).maybeSingle();
+    if (existing) return err('That account is already on the staff list. Change their role instead.', 409, origin);
+    const { error } = await db.from('wassaa_admin_users').insert({
+      user_id: found, display_name: displayName, role, persona_limit: limit, created_by: actor
+    });
+    if (error) return err('Could not add that staff member.', 500, origin);
+    await audit('staff.added', found, { role, email, personaLimit: limit });
+    return json({ success: true, userId: found, role, personaLimit: limit }, 200, origin);
+  }
+  const staffOneMatch = path.match(/^\/admin\/staff\/([0-9a-f-]+)$/i);
+  if (staffOneMatch && req.method === 'PATCH') {
+    const targetId = staffOneMatch[1];
+    const b = await bodyJson(req);
+    const { data: target } = await db.from('wassaa_admin_users')
+      .select('user_id,display_name,role,status,persona_limit').eq('user_id', targetId).maybeSingle();
+    if (!target) return err('Staff member not found.', 404, origin);
+    const update: Row = {};
+    if (typeof b.displayName === 'string') {
+      const name = cleanString(b.displayName, 60);
+      if (name.length < 2) return err('Give them a display name with at least 2 characters.', 400, origin);
+      update.display_name = name;
+    }
+    if (b.personaLimit !== undefined) {
+      const limit = Number(b.personaLimit);
+      if (!Number.isFinite(limit) || limit < 1 || limit > 200) return err('Persona limit must be between 1 and 200.', 400, origin);
+      update.persona_limit = Math.trunc(limit);
+    }
+    if (b.status !== undefined) {
+      if (b.status !== 'active' && b.status !== 'suspended') return err('Status must be active or suspended.', 400, origin);
+      if (target.role === 'owner' && b.status === 'suspended') return err('The owner cannot be suspended. Transfer ownership first.', 409, origin);
+      update.status = b.status;
+    }
+    if (b.makeOwner === true) {
+      if (targetId === staff.userId) return err('You already own this console.', 409, origin);
+      update.role = 'owner';
+      update.status = 'active';
+      const { error } = await db.from('wassaa_admin_users').update(update).eq('user_id', targetId);
+      if (error) return err('Could not transfer ownership.', 500, origin);
+      await db.from('wassaa_admin_users').update({ role: 'admin' }).eq('user_id', staff.userId);
+      await audit('staff.ownership_transferred', targetId, { from: staff.userId });
+      return json({ success: true }, 200, origin);
+    }
+    if (b.role !== undefined) {
+      if (b.role !== 'admin' && b.role !== 'moderator') return err('Role must be admin or moderator. Transfer ownership instead.', 400, origin);
+      if (targetId === staff.userId) return err('You cannot change your own role. Ask another owner.', 409, origin);
+      if (target.role === 'owner') return err('Transfer ownership before changing the owner role.', 409, origin);
+      update.role = b.role;
+    }
+    if (!Object.keys(update).length) return err('Nothing to update.', 400, origin);
+    // Promoting a moderator to admin ends their desk: an admin sees every
+    // persona, so keeping them assigned would only consume capacity slots and
+    // show a misleading owner chip on the cards.
+    if (update.role === 'admin') {
+      await db.from('wassaa_persona_assignments')
+        .update({ revoked_at: new Date().toISOString(), revoked_by: actor })
+        .eq('moderator_id', targetId).is('revoked_at', null);
+    }
+    const { error } = await db.from('wassaa_admin_users').update(update).eq('user_id', targetId);
+    if (error) return err('Could not update staff member.', 500, origin);
+    // Suspension ends live claims immediately; the assignment list is kept so
+    // reactivation resumes the same desk.
+    if (update.status === 'suspended') {
+      await db.from('matches').update({ claimed_by: null, claim_expires_at: null }).eq('claimed_by', targetId);
+    }
+    await audit('staff.updated', targetId, { fields: Object.keys(update) });
+    return json({ success: true }, 200, origin);
+  }
+  if (staffOneMatch && req.method === 'DELETE') {
+    const targetId = staffOneMatch[1];
+    if (targetId === staff.userId) return err('You cannot remove your own access.', 409, origin);
+    const { data: target } = await db.from('wassaa_admin_users').select('role').eq('user_id', targetId).maybeSingle();
+    if (!target) return err('Staff member not found.', 404, origin);
+    if (target.role === 'owner') return err('Transfer ownership before removing the owner.', 409, origin);
+    await db.from('wassaa_persona_assignments')
+      .update({ revoked_at: new Date().toISOString(), revoked_by: actor })
+      .eq('moderator_id', targetId).is('revoked_at', null);
+    await db.from('matches').update({ claimed_by: null, claim_expires_at: null }).eq('claimed_by', targetId);
+    const { error } = await db.from('wassaa_admin_users').delete().eq('user_id', targetId);
+    if (error) return err('Could not remove staff member.', 500, origin);
+    await audit('staff.removed', targetId, {});
+    return json({ success: true }, 200, origin);
+  }
   return err('Not found.', 404, origin);
 }
 

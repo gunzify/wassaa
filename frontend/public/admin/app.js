@@ -3,13 +3,17 @@
   'use strict';
 
   var API_ROOT = 'https://avlbsficfejvwokxkgyl.supabase.co/functions/v1/api';
-  var state = { accessToken: '', refreshToken: '', expiresAt: 0, publishableKey: '', admin: '', tab: 'verifications', queue: [], reports: [], appeals: [], threads: [], npcs: [], audit: [], storage: false, npcOffset: 0, npcTotal: 0, overview: null, facets: null };
+  var state = { accessToken: '', refreshToken: '', expiresAt: 0, publishableKey: '', admin: '', tab: 'verifications', queue: [], reports: [], appeals: [], threads: [], npcs: [], audit: [], storage: false, npcOffset: 0, npcTotal: 0, overview: null, facets: null, staff: null, role: '', staffList: [] };
 
   var $ = function (sel) { return document.querySelector(sel); };
   var gate = $('#gate');
   var app = $('#app');
   var toastTimer = null;
-  var TABS = ['verifications', 'reports', 'appeals', 'threads', 'npcs', 'audit'];
+  var TABS = ['verifications', 'reports', 'appeals', 'threads', 'npcs', 'audit', 'staff'];
+  // Which rungs see which tab. Moderators get their desk only.
+  var ADMIN_ONLY_TABS = ['verifications', 'reports', 'appeals', 'audit'];
+  function isAdmin() { return state.role === 'owner' || state.role === 'admin'; }
+  function can(capability) { return Boolean(state.staff && state.staff.capabilities && state.staff.capabilities[capability]); }
 
   // ---------- helpers ----------
   function esc(value) {
@@ -88,6 +92,9 @@
     state.accessToken = '';
     state.refreshToken = '';
     state.admin = '';
+    state.staff = null;
+    state.role = '';
+    state.staffList = [];
     closeSheet();
     app.classList.add('hidden');
     gate.classList.remove('hidden');
@@ -169,6 +176,7 @@
       if (name === 'appeals') loadAppeals();
       if (name === 'threads') loadThreads();
       if (name === 'npcs') loadNpcs(true);
+      if (name === 'staff') loadStaff();
     });
   });
 
@@ -179,26 +187,85 @@
   $('#threads-paid').addEventListener('change', loadThreads);
   $('#npc-search-btn').addEventListener('click', function () { loadNpcs(true); });
   $('#npc-search').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadNpcs(true); });
-  ['#npc-country', '#npc-class', '#npc-service', '#npc-gender', '#npc-active', '#npc-curated'].forEach(function (sel) {
+  ['#npc-country', '#npc-class', '#npc-service', '#npc-gender', '#npc-active', '#npc-curated', '#npc-assigned'].forEach(function (sel) {
     $(sel).addEventListener('change', function () { loadNpcs(true); });
   });
   $('#npc-clear').addEventListener('click', function () {
-    ['#npc-search', '#npc-country', '#npc-class', '#npc-service', '#npc-gender', '#npc-active', '#npc-curated'].forEach(function (sel) { $(sel).value = ''; });
+    ['#npc-search', '#npc-country', '#npc-class', '#npc-service', '#npc-gender', '#npc-active', '#npc-curated', '#npc-assigned'].forEach(function (sel) { $(sel).value = ''; });
     loadNpcs(true);
   });
   $('#npc-more').addEventListener('click', function () { loadNpcs(false); });
+  var staffAdd = $('#staff-add');
+  if (staffAdd) staffAdd.addEventListener('click', addStaff);
 
   // ---------- loading ----------
   function loadAll() {
-    loadSession();
-    loadOverview();
-    loadFacets();
-    loadQueue();
-    loadReports();
-    loadAppeals();
-    loadThreads();
-    if (state.tab === 'npcs') loadNpcs(true);
-    if (state.tab === 'audit') loadAudit();
+    // Session first: it decides which queues this account is allowed to load at
+    // all, so a moderator never fires five admin-only requests that 403.
+    loadSession().then(function () {
+      applyRole();
+      loadOverview();
+      loadFacets();
+      if (isAdmin()) {
+        loadQueue();
+        loadReports();
+        loadAppeals();
+        loadStaffDirectory();
+        if (state.tab === 'audit') loadAudit();
+        if (state.tab === 'staff') loadStaff();
+      }
+      loadThreads();
+      if (state.tab === 'npcs') loadNpcs(true);
+    });
+  }
+
+  // The console is one page with role-scoped tabs. Hiding a tab is a courtesy;
+  // the Edge API enforces the same matrix on every call.
+  function applyRole() {
+    var admin = isAdmin();
+    var owner = state.role === 'owner';
+    TABS.forEach(function (name) {
+      var tab = document.querySelector('.tab[data-tab="' + name + '"]');
+      var panel = $('#panel-' + name);
+      var visible = admin ? true : (name === 'threads' || name === 'npcs');
+      if (tab) tab.classList.toggle('hidden', !visible);
+      if (panel) panel.classList.toggle('hidden', !visible || name !== state.tab);
+    });
+    var chip = $('#role-chip');
+    if (chip) {
+      chip.textContent = state.staff ? state.staff.name + ' · ' + state.role : '';
+      chip.className = 'flag' + (state.role === 'moderator' ? ' warn' : '');
+    }
+    var active = document.querySelector('.tab[data-tab="' + state.tab + '"]');
+    if (!active || active.classList.contains('hidden')) {
+      state.tab = admin ? 'verifications' : 'threads';
+      document.querySelectorAll('.tab').forEach(function (t) {
+        t.classList.toggle('active', t.getAttribute('data-tab') === state.tab);
+      });
+      TABS.forEach(function (n) {
+        var panel = $('#panel-' + n);
+        if (panel) panel.classList.toggle('hidden', n !== state.tab);
+      });
+    }
+    var npcLabel = $('#npc-assigned');
+    if (npcLabel) npcLabel.classList.toggle('hidden', !admin);
+    if (state.role === 'moderator') {
+      var hint = document.querySelector('#panel-npcs .hint');
+      if (hint) hint.innerHTML = 'These are your personas. Open one to edit its profile, rewrite its lines or add a photo. An admin publishes it. <strong>Chats</strong> holds every thread on these personas; claim one before replying so two people never answer the same member.';
+      var threadHint = document.querySelector('#panel-threads .hint');
+      if (threadHint) threadHint.innerHTML = 'Every conversation on the personas assigned to you. A member with a “waiting for a reply” badge has spoken last. Claim the thread before replying so two operators never answer the same person twice.';
+    }
+  }
+
+  function loadSession() {
+    return api('/session').then(function (json) {
+      state.storage = !!json.storage;
+      state.staff = json.staff || null;
+      state.role = (json.staff && json.staff.role) || 'admin';
+      var flag = $('#storage-flag');
+      flag.textContent = json.storage ? 'R2 connected' : 'R2 not configured';
+      flag.className = 'flag' + (json.storage ? '' : ' warn');
+    }).catch(function () { /* gate handles auth errors */ });
   }
 
   // Header strip: every queue that needs a human, plus persona/paid counts.
@@ -212,16 +279,32 @@
   function renderOverview(o) {
     var box = $('#overview');
     if (!box) return;
-    var cards = [
-      { key: 'verifications', label: 'Verifications', value: o.pendingVerifications, alert: o.pendingVerifications > 0 },
-      { key: 'reports', label: 'Open reports', value: o.openReports, alert: o.openReports > 0 },
-      { key: 'appeals', label: 'Appeals', value: o.pendingAppeals, alert: o.pendingAppeals > 0 },
-      { key: 'threads', label: 'Team threads', value: o.adminOwnedThreads, alert: false },
-      { key: 'threads', label: 'Paid members', value: o.paidMembers, alert: false },
-      { key: 'npcs', label: 'Personas', value: o.personas, alert: false },
-      { key: 'npcs', label: 'Curated set', value: o.curatedPersonas, alert: false, curated: true },
-      { key: 'npcs', label: 'Active personas', value: o.activePersonas, alert: false }
-    ];
+    var cards;
+    if (state.role === 'moderator') {
+      // A moderator's scoreboard: the desk they hold and who is waiting on it.
+      cards = [
+        { key: 'npcs', label: 'My personas', value: o.assignedPersonas },
+        { key: 'npcs', label: 'Live personas', value: o.livePersonas },
+        { key: 'threads', label: 'Waiting replies', value: o.waitingReplies, alert: o.waitingReplies > 0 },
+        { key: 'threads', label: 'My threads', value: o.myThreads },
+        { key: 'threads', label: 'Escalated', value: o.escalated, alert: o.escalated > 0 },
+        { key: 'npcs', label: 'Persona limit', value: o.personaLimit }
+      ];
+    } else {
+      cards = [
+        { key: 'verifications', label: 'Verifications', value: o.pendingVerifications, alert: o.pendingVerifications > 0 },
+        { key: 'reports', label: 'Open reports', value: o.openReports, alert: o.openReports > 0 },
+        { key: 'appeals', label: 'Appeals', value: o.pendingAppeals, alert: o.pendingAppeals > 0 },
+        { key: 'threads', label: 'Team threads', value: o.adminOwnedThreads, alert: false },
+        { key: 'threads', label: 'Paid members', value: o.paidMembers, alert: false },
+        { key: 'npcs', label: 'Personas', value: o.personas, alert: false },
+        { key: 'npcs', label: 'Curated set', value: o.curatedPersonas, alert: false, curated: true },
+        { key: 'npcs', label: 'Active personas', value: o.activePersonas, alert: false },
+        { key: 'npcs', label: 'Unassigned', value: o.unassignedPersonas, alert: false },
+        { key: 'threads', label: 'Escalations', value: o.escalatedThreads, alert: o.escalatedThreads > 0 },
+        { key: 'staff', label: 'Staff', value: o.staffCount, alert: false }
+      ];
+    }
     box.innerHTML = cards.map(function (c) {
       return '<button type="button" class="card' + (c.alert ? ' alert' : '') + '" data-goto="' + c.key + '"' + (c.curated ? ' data-curated="1"' : '') + '>' +
         '<b>' + esc(c.value == null ? '—' : c.value) + '</b><span>' + esc(c.label) + '</span></button>';
@@ -250,15 +333,6 @@
         return '<option value="' + esc(s.name) + '">' + esc(s.name) + ' (' + s.count + ')</option>';
       }).join('');
     }).catch(function () { /* filters stay as-is */ });
-  }
-
-  function loadSession() {
-    api('/session').then(function (json) {
-      state.storage = !!json.storage;
-      var flag = $('#storage-flag');
-      flag.textContent = json.storage ? 'R2 connected' : 'R2 not configured';
-      flag.className = 'flag' + (json.storage ? '' : ' warn');
-    }).catch(function () { /* gate handles auth errors */ });
   }
 
   function loadQueue() {
@@ -329,6 +403,7 @@
     push('gender', '#npc-gender');
     push('active', '#npc-active');
     push('curated', '#npc-curated');
+    push('assigned', '#npc-assigned');
     params.push('limit=60');
     params.push('offset=' + offset);
     return '/npcs?' + params.join('&');
@@ -484,6 +559,8 @@
       return;
     }
     box.innerHTML = state.threads.map(function (t) {
+      var claim = t.claimLive ? (t.claimedByMe ? 'You have this thread' : 'With ' + (t.claimedByName || 'another operator')) : '';
+      var mine = t.claimedByMe;
       return (
         '<article class="card" data-thread="' + esc(t.id) + '">' +
           '<div class="card-head">' +
@@ -494,20 +571,55 @@
                 (t.member.verified ? '<span class="badge">verified</span>' : '') +
                 '<span class="badge">' + esc(t.member.countryCode || 'NG') + '</span>' +
                 (t.creditsBought ? '<span class="badge">' + esc(t.creditsBought) + ' credits bought</span>' : '') +
+                (t.waiting ? '<span class="badge" style="background:var(--danger-wash,#fde8e8);color:var(--danger,#a33)">waiting for a reply</span>' : '') +
+                (t.escalatedAt ? '<span class="badge">escalated</span>' : '') +
+                (claim ? '<span class="badge">' + esc(claim) + '</span>' : '') +
               '</span></div>' +
             '<div class="doc"><span class="state ' + esc(t.autoState) + '">' + esc(t.autoState.replace('_', ' ')) + '</span>' +
-              (t.takenOverBy ? '<br />operated by your team' : '') +
+              (t.takenOverBy ? '<br />operated by ' + esc(t.takenOverBy) : '') +
               (t.purchasedAt ? '<br />paid ' + esc(fmtDate(t.purchasedAt)) : '') + '</div>' +
           '</div>' +
+          (t.lastMessage && t.lastMessage.text ? '<p class="muted" style="margin:0 18px 8px;font-size:12px">' + esc(t.lastMessage.text.slice(0, 160)) + (t.lastMessage.sentByName ? ' — ' + esc(t.lastMessage.sentByName) : '') + '</p>' : '') +
+          (t.escalationNote ? '<p class="muted" style="margin:0 18px 8px;font-size:12px">Escalated: ' + esc(t.escalationNote) + '</p>' : '') +
           '<div class="decision">' +
             '<button class="btn" data-action="open-thread" type="button">Open conversation</button>' +
-            (t.autoState === 'quiet' ? '<span class="muted" style="font-size:12px">Auto-reply paused. A credit purchase by the member hands this thread to your team.</span>' : '') +
+            (t.claimLive && !mine
+              ? '<span class="muted" style="font-size:12px">' + esc(t.claimedByName || 'Another operator') + ' is replying — the lease ends ' + esc(fmtDate(t.claimExpiresAt)) + '.</span>'
+              : mine
+                ? '<button class="btn ghost" data-action="release-thread" type="button">Release</button>'
+                : '<button class="btn" data-action="claim-thread" type="button">Take over</button>') +
+            '<button class="btn ghost" data-action="escalate-thread" type="button">' + (t.escalatedAt ? 'Clear escalation' : 'Escalate') + '</button>' +
+            (t.autoState === 'quiet' ? '<span class="muted" style="font-size:12px">Auto-reply paused. A credit purchase by the member hands this thread to the team.</span>' : '') +
           '</div>' +
         '</article>'
       );
     }).join('');
   }
 
+  function claimThread(matchId) {
+    api('/threads/' + encodeURIComponent(matchId) + '/claim', { method: 'POST' })
+      .then(function () { toast('Thread claimed for 30 minutes'); loadThreads(); })
+      .catch(function (err) { toast(err.message, true); loadThreads(); });
+  }
+
+  function releaseThread(matchId) {
+    api('/threads/' + encodeURIComponent(matchId) + '/release', { method: 'POST' })
+      .then(function () { toast('Thread released'); loadThreads(); })
+      .catch(function (err) { toast(err.message, true); });
+  }
+
+  function escalateThread(matchId, alreadyEscalated) {
+    if (alreadyEscalated) {
+      return api('/threads/' + encodeURIComponent(matchId) + '/escalate', { method: 'DELETE' })
+        .then(function () { toast('Escalation cleared'); loadThreads(); })
+        .catch(function (err) { toast(err.message, true); });
+    }
+    var note = (window.prompt('What does the admin need to decide? (the member will not see this)', '') || '').trim();
+    if (!note) { toast('Add a short note before escalating.', true); return Promise.resolve(); }
+    return api('/threads/' + encodeURIComponent(matchId) + '/escalate', { method: 'POST', body: { note: note } })
+      .then(function () { toast('Escalated to an admin'); loadThreads(); })
+      .catch(function (err) { toast(err.message, true); });
+  }
   // ---------- render: npcs ----------
   function npcCard(n) {
     var photo = (n.photos || [])[0];
@@ -526,17 +638,26 @@
         '<div class="body">' +
           '<strong>' + esc(n.name) + (curated ? ' <span class="badge">curated</span>' : '') + (n.active ? '' : ' <span class="badge">paused</span>') + (needsPhoto ? ' <span class="badge">needs photo</span>' : '') + (quarantined ? ' <span class="badge">quarantined</span>' : '') + (n.aiEnabled ? ' <span class="badge">AI</span>' : '') + '</strong>' +
           '<span class="meta">' + esc(n.age || '—') + ' · ' + esc([n.city, n.state].filter(Boolean).join(', ')) + '</span>' +
-          '<span class="flagline">' + flags.map(function (f) { return '<span class="badge">' + esc(f) + '</span>'; }).join('') + '</span>' +
+          '<span class="flagline">' + flags.map(function (f) { return '<span class="badge">' + esc(f) + '</span>'; }).join('') +
+            (isAdmin()
+              ? (n.assignedTo ? '<span class="badge">' + (n.assignedTo.mine ? 'yours' : 'owned by ' + esc(n.assignedTo.name)) + '</span>' : '<span class="badge">unassigned</span>')
+              : '<span class="badge">your persona</span>') +
+          '</span>' +
           '<span>' + esc([n.service, n.orgRole, n.skill].filter(Boolean).join(' · ') || n.professionCategory || '') + '</span>' +
           '<span>' + esc(n.verificationStatus || '') + ' · greeter: ' + esc(persona.greeter ? 'yes' : 'no') + '</span>' +
           (quarantined ? '<span class="meta">Quarantined: ' + esc(n.quarantineReason || 'photo reads as generated') + '</span>' : '') +
           '<div class="actions">' +
             '<button class="btn" data-action="npc-edit" type="button">Edit</button>' +
-            '<button class="btn" data-action="npc-scripts" type="button">Scripts</button>' +
+            '<button class="btn" data-action="npc-scripts" type="button">Messages</button>' +
             '<button class="btn" data-action="npc-photos" type="button">Photos</button>' +
-            '<button class="btn" data-action="npc-curate" type="button">' + (curated ? 'Remove from set' : 'Add to set') + '</button>' +
-            '<button class="btn ' + (n.active ? 'reject' : 'approve') + '" data-action="npc-toggle" type="button">' + (n.active ? 'Pause' : 'Activate') + '</button>' +
-            '<button class="btn" data-action="npc-quarantine" type="button">' + (quarantined ? 'Release photo' : 'Quarantine photo') + '</button>' +
+            (isAdmin()
+              ? '<button class="btn" data-action="npc-curate" type="button">' + (curated ? 'Remove from set' : 'Add to set') + '</button>' +
+                '<button class="btn ' + (n.active ? 'reject' : 'approve') + '" data-action="npc-toggle" type="button">' + (n.active ? 'Pause' : 'Activate') + '</button>' +
+                '<button class="btn" data-action="npc-assign" type="button">Assign</button>' +
+                '<button class="btn" data-action="npc-quarantine" type="button">' + (quarantined ? 'Release photo' : 'Quarantine photo') + '</button>'
+              : (quarantined
+                  ? '<span class="muted" style="font-size:11px;align-self:center">Awaiting admin release</span>'
+                  : '<button class="btn" data-action="npc-quarantine" type="button">Flag photo</button>')) +
           '</div>' +
         '</div>' +
       '</article>'
@@ -575,6 +696,184 @@
         '<span class="mono">' + esc(a.detail ? JSON.stringify(a.detail).slice(0, 120) : '') + '</span>' +
       '</div>';
     }).join('') + '</div>';
+  }
+
+  // ---------- staff: roles, capacity and persona assignment ----------
+  function populateAssignees() {
+    var moderators = state.staffList.filter(function (s) { return s.role === 'moderator'; });
+    var select = $('#npc-assigned');
+    if (select) {
+      var current = select.value;
+      select.innerHTML = '<option value="">Any owner</option><option value="none">Unassigned</option>' +
+        moderators.map(function (s) {
+          return '<option value="' + esc(s.id) + '">' + esc(s.name) + ' (' + esc(s.assigned) + ')</option>';
+        }).join('');
+      select.value = current;
+    }
+  }
+
+  function loadStaffDirectory() {
+    if (!isAdmin()) return;
+    api('/staff').then(function (json) {
+      state.staffList = json.staff || [];
+      populateAssignees();
+    }).catch(function () { /* the staff tab surfaces the same error */ });
+  }
+
+  function loadStaff() {
+    if (!isAdmin()) return;
+    var box = $('#staff');
+    api('/staff').then(function (json) {
+      state.staffList = json.staff || [];
+      populateAssignees();
+      renderStaff(box);
+    }).catch(function (err) {
+      box.innerHTML = '<div class="empty">' + esc(err.message) + '</div>';
+    });
+  }
+
+  function renderStaff(box) {
+    if (!box) return;
+    var owner = state.role === 'owner';
+    var addForm = ['#staff-email', '#staff-name', '#staff-role', '#staff-limit', '#staff-add'];
+    addForm.forEach(function (sel) {
+      var el = $(sel);
+      if (el) el.disabled = !owner;
+    });
+    if (!state.staffList.length) {
+      box.innerHTML = '<div class="empty">No staff yet.</div>';
+      return;
+    }
+    box.innerHTML = state.staffList.map(function (s) {
+      var controls = !owner || s.role === 'owner'
+        ? '<span class="muted" style="font-size:12px">' + (s.role === 'owner' ? 'Owner — transfer ownership to change this account.' : 'Only the owner can change staff.') + '</span>'
+        : '<select data-staff-role>' +
+            '<option value="moderator"' + (s.role === 'moderator' ? ' selected' : '') + '>Moderator</option>' +
+            '<option value="admin"' + (s.role === 'admin' ? ' selected' : '') + '>Admin</option>' +
+          '</select>' +
+          '<input type="number" min="1" max="200" value="' + esc(s.personaLimit) + '" data-staff-limit style="width:92px" title="Persona limit" />' +
+          '<button class="btn" data-staff-action="save" type="button">Save</button>' +
+          '<button class="btn ghost" data-staff-action="toggle" type="button">' + (s.status === 'active' ? 'Suspend' : 'Reactivate') + '</button>' +
+          '<button class="btn ghost" data-staff-action="owner" type="button">Make owner</button>' +
+          '<button class="btn reject" data-staff-action="remove" type="button">Remove</button>';
+      return '<article class="card" data-staff="' + esc(s.id) + '">' +
+        '<div class="card-head">' +
+          '<div class="who"><strong>' + esc(s.name) + (s.isYou ? ' (you)' : '') + '</strong>' +
+            '<span>' + esc(s.role) + ' · ' + esc(s.status) + ' · ' + esc(s.assigned) + ' / ' + esc(s.personaLimit) + ' personas</span>' +
+            '<span class="flagline"><span class="badge">' + esc(s.role) + '</span>' +
+              (s.status !== 'active' ? '<span class="badge">suspended</span>' : '') +
+              (s.lastSeenAt ? '<span class="badge">seen ' + esc(fmtDate(s.lastSeenAt)) + '</span>' : '') +
+            '</span></div>' +
+          '<div class="doc"><span class="mono" style="font-size:10px">' + esc(String(s.id).slice(0, 8)) + '…</span><br />' + esc(fmtDate(s.createdAt)) + '</div>' +
+        '</div>' +
+        '<div class="decision">' + controls + '</div>' +
+      '</article>';
+    }).join('');
+
+    box.querySelectorAll('[data-staff]').forEach(function (card) {
+      var id = card.dataset.staff;
+      var save = card.querySelector('[data-staff-action="save"]');
+      var toggle = card.querySelector('[data-staff-action="toggle"]');
+      var makeOwner = card.querySelector('[data-staff-action="owner"]');
+      var remove = card.querySelector('[data-staff-action="remove"]');
+      var roleSelect = card.querySelector('[data-staff-role]');
+      var limitInput = card.querySelector('[data-staff-limit]');
+      if (save) save.addEventListener('click', function () {
+        save.disabled = true;
+        api('/staff/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          body: { role: roleSelect.value, personaLimit: Number(limitInput.value) }
+        }).then(function () { toast('Staff member updated'); loadStaff(); })
+          .catch(function (err) { save.disabled = false; toast(err.message, true); });
+      });
+      if (toggle) toggle.addEventListener('click', function () {
+        toggle.disabled = true;
+        var next = toggle.textContent.trim() === 'Suspend' ? 'suspended' : 'active';
+        if (next === 'suspended' && !window.confirm('Suspend this account? Their console access ends and any thread claim is released. Their persona assignments are kept.')) {
+          toggle.disabled = false;
+          return;
+        }
+        api('/staff/' + encodeURIComponent(id), { method: 'PATCH', body: { status: next } })
+          .then(function () { toast(next === 'suspended' ? 'Staff suspended' : 'Staff reactivated'); loadStaff(); })
+          .catch(function (err) { toggle.disabled = false; toast(err.message, true); });
+      });
+      if (makeOwner) makeOwner.addEventListener('click', function () {
+        if (!window.confirm('Transfer ownership? You become an admin and this account becomes the only owner.')) return;
+        api('/staff/' + encodeURIComponent(id), { method: 'PATCH', body: { makeOwner: true } })
+          .then(function () { toast('Ownership transferred'); loadAll(); })
+          .catch(function (err) { toast(err.message, true); });
+      });
+      if (remove) remove.addEventListener('click', function () {
+        if (!window.confirm('Remove this account from staff? Their persona assignments are released and their thread claims end. The member account itself is untouched.')) return;
+        api('/staff/' + encodeURIComponent(id), { method: 'DELETE' })
+          .then(function () { toast('Staff member removed'); loadStaff(); loadStaffDirectory(); })
+          .catch(function (err) { toast(err.message, true); });
+      });
+    });
+  }
+
+  function addStaff() {
+    var email = ($('#staff-email').value || '').trim().toLowerCase();
+    if (!email || email.indexOf('@') === -1) { toast('Enter the email they sign in with.', true); return; }
+    var button = $('#staff-add');
+    button.disabled = true;
+    api('/staff', {
+      method: 'POST',
+      body: {
+        email: email,
+        displayName: ($('#staff-name').value || '').trim() || undefined,
+        role: $('#staff-role').value,
+        personaLimit: Number($('#staff-limit').value) || 30
+      }
+    }).then(function () {
+      toast('Staff member added');
+      $('#staff-email').value = '';
+      $('#staff-name').value = '';
+      button.disabled = false;
+      loadStaff();
+      loadStaffDirectory();
+    }).catch(function (err) {
+      button.disabled = false;
+      toast(err.message, true);
+    });
+  }
+
+  function openAssignSheet(npcId) {
+    var npc = state.npcs.find(function (x) { return x.id === npcId; });
+    if (!npc) return;
+    var moderators = state.staffList.filter(function (s) { return s.role === 'moderator' && s.status === 'active'; });
+    var options = '<option value="">Unassigned</option>' + moderators.map(function (s) {
+      var selected = npc.assignedTo && String(npc.assignedTo.id) === String(s.id) ? ' selected' : '';
+      return '<option value="' + esc(s.id) + '"' + selected + '>' + esc(s.name) + ' — ' + esc(s.assigned) + '/' + esc(s.personaLimit) + '</option>';
+    }).join('');
+    var sheet = openSheet('Assign persona — ' + npc.name,
+      '<div style="padding:14px 18px">' +
+        '<p class="muted" style="margin:0 0 10px;font-size:12px">One persona has one moderator. Assigning someone else moves it: the previous moderator loses edit and chat access immediately. Admins keep supervision either way.</p>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+          '<select id="assign-staff" style="flex:1;min-width:220px">' + options + '</select>' +
+          '<button class="btn primary" id="assign-save" type="button" style="margin-top:0">Save assignment</button>' +
+        '</div>' +
+        (moderators.length ? '' : '<p class="muted" style="font-size:12px;margin:10px 0 0">No active moderators yet. Add one in Staff first.</p>') +
+      '</div>');
+    sheet.querySelector('#assign-save').addEventListener('click', function () {
+      var value = sheet.querySelector('#assign-staff').value || null;
+      var button = sheet.querySelector('#assign-save');
+      button.disabled = true;
+      api('/npcs/' + encodeURIComponent(npcId) + '/assign', { method: 'POST', body: { moderatorId: value } })
+        .then(function (json) {
+          if (value) {
+            var person = state.staffList.find(function (s) { return String(s.id) === String(value); });
+            npc.assignedTo = person ? { id: person.id, name: person.name, mine: person.id === (state.staff && state.staff.id) } : null;
+          } else {
+            npc.assignedTo = null;
+          }
+          replaceNpcCard(npcId);
+          closeSheet();
+          toast(json.assigned ? 'Persona assigned' : 'Persona unassigned');
+          loadStaffDirectory();
+        })
+        .catch(function (err) { button.disabled = false; toast(err.message, true); });
+    });
   }
 
   // ---------- report context review (KB §18D) ----------
@@ -685,37 +984,103 @@
 
   // ---------- thread takeover: read + reply as the persona ----------
   function openThread(matchId) {
-    openSheet('Conversation', '<div class="conv" id="thread-body"><div class="muted">Loading…</div></div>' +
+    var sheet = openSheet('Conversation',
+      '<div id="thread-claim" class="muted" style="padding:10px 18px 0;font-size:12px">Loading…</div>' +
+      '<div class="conv" id="thread-body"><div class="muted">Loading…</div></div>' +
       '<div class="composer"><input id="thread-input" type="text" maxlength="4000" placeholder="Reply as this persona…" />' +
-      '<button class="btn" id="thread-send" type="button">Send</button></div>');
+      '<button class="btn" id="thread-send" type="button">Send</button></div>' +
+      '<div class="decision" id="thread-actions"></div>');
+    var current = null;
+
+    var paint = function (claim) {
+      claim = claim || {};
+      var heldByOther = Boolean(claim.claimedBy && claim.claimedBy !== (state.staff && state.staff.id));
+      var mine = Boolean(claim.claimedBy && claim.claimedBy === (state.staff && state.staff.id));
+      var banner = sheet.querySelector('#thread-claim');
+      if (banner) {
+        banner.innerHTML = heldByOther
+          ? 'With <b>' + esc(claim.claimedByName || 'another operator') + '</b> until ' + esc(fmtDate(claim.expiresAt)) + '. Sending is locked until the lease ends.'
+          : mine
+            ? 'You have this thread until ' + esc(fmtDate(claim.expiresAt)) + '. Sends renew the lease.'
+            : 'Nobody has claimed this thread. Replying (or pressing Take over) starts a 30-minute lease.';
+      }
+      var input = sheet.querySelector('#thread-input');
+      var send = sheet.querySelector('#thread-send');
+      if (input) input.disabled = heldByOther;
+      if (send) send.disabled = heldByOther;
+      var actions = sheet.querySelector('#thread-actions');
+      if (actions) {
+        actions.innerHTML =
+          (heldByOther ? '' : mine
+            ? '<button class="btn ghost" data-thread-action="release" type="button">Release thread</button>'
+            : '<button class="btn" data-thread-action="claim" type="button">Take over</button>') +
+          '<button class="btn ghost" data-thread-action="escalate" type="button">' + (claim.escalatedAt ? 'Clear escalation' : 'Escalate to admin') + '</button>' +
+          (claim.escalationNote ? '<span class="muted" style="font-size:12px">Escalated: ' + esc(claim.escalationNote) + '</span>' : '');
+        actions.querySelectorAll('[data-thread-action]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var action = btn.getAttribute('data-thread-action');
+            if (action === 'claim') {
+              api('/threads/' + encodeURIComponent(matchId) + '/claim', { method: 'POST' })
+                .then(function () { toast('Thread claimed'); load(); loadThreads(); })
+                .catch(function (err) { toast(err.message, true); load(); });
+            } else if (action === 'release') {
+              api('/threads/' + encodeURIComponent(matchId) + '/release', { method: 'POST' })
+                .then(function () { toast('Thread released'); load(); loadThreads(); })
+                .catch(function (err) { toast(err.message, true); });
+            } else {
+              escalateThread(matchId, Boolean(claim.escalatedAt)).then(load);
+              loadThreads();
+            }
+          });
+        });
+      }
+    };
+
     var load = function () {
       api('/threads/' + encodeURIComponent(matchId) + '/messages').then(function (json) {
+        current = json;
         var body = $('#thread-body');
         if (!body) return;
         body.innerHTML = (json.messages || []).length ? json.messages.map(function (m) {
-          var mine = m.senderId === json.npc.id;
+          var fromPersona = m.senderId === json.npc.id;
           var content = m.kind === 'photo'
             ? (m.mediaUrl ? '<img src="' + esc(m.mediaUrl) + '" alt="" data-zoom="' + esc(m.mediaUrl) + '" style="max-width:220px;border-radius:10px" />' : '<i>photo</i>')
             : esc(m.text);
-          return '<div class="bubble ' + (mine ? 'me' : 'them') + '"><span class="sender">' + esc(mine ? json.npc.name : json.member ? json.member.name : 'Member') + '</span>' + content + '</div>';
+          // Attribution is console-only: members still see one persona voice.
+          var label = fromPersona ? json.npc.name : json.member ? json.member.name : 'Member';
+          if (fromPersona && m.sentByName) label += ' · via ' + m.sentByName;
+          return '<div class="bubble ' + (fromPersona ? 'me' : 'them') + '"><span class="sender">' + esc(label) + '</span>' + content + '</div>';
         }).join('') : '<div class="muted">No messages yet.</div>';
         body.scrollTop = body.scrollHeight;
+        paint(json.claim);
       }).catch(function (err) {
         var body = $('#thread-body');
         if (body) body.innerHTML = '<div class="empty">' + esc(err.message) + '</div>';
       });
     };
-    load();
+
     var send = function () {
       var input = $('#thread-input');
+      if (!input || input.disabled) return;
       var text = (input.value || '').trim();
       if (!text) return;
+      input.disabled = true;
       api('/threads/' + encodeURIComponent(matchId) + '/messages', { method: 'POST', body: { text: text } })
-        .then(function () { input.value = ''; load(); if (state.tab === 'audit') loadAudit(); })
-        .catch(function (err) { toast(err.message, true); });
+        .then(function () { input.value = ''; input.disabled = false; load(); loadThreads(); })
+        .catch(function (err) {
+          input.disabled = false;
+          toast(err.message, true);
+          // A 409 means someone else took the lease while we typed; repaint the
+          // banner so the composer locks instead of silently failing again.
+          load();
+        });
     };
-    $('#thread-send').addEventListener('click', send);
-    $('#thread-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(); });
+
+    load();
+    var sendBtn = sheet.querySelector('#thread-send');
+    if (sendBtn) sendBtn.addEventListener('click', send);
+    var textInput = sheet.querySelector('#thread-input');
+    if (textInput) textInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') send(); });
   }
 
   // ---------- npc editors ----------
@@ -823,16 +1188,25 @@
       section('Conversation prompts', 'Up to three. Blank rows are removed.') +
       promptRows +
       section('Trust & visibility', '') +
-      selectField('verificationStatus', 'Verification', n.verificationStatus, [['verified', 'Verified — seal shown'], ['pending', 'Pending review'], ['not_started', 'Not verified']]) +
-      '<div class="decision" style="padding:8px 18px;gap:12px">' +
-        '<label style="font-size:12px"><input type="checkbox" id="npc-greeter" ' + (n.persona && n.persona.greeter ? 'checked' : '' ) + ' /> Greeter (proactively messages new matches)</label>' +
-        '<label style="font-size:12px"><input type="checkbox" id="npc-curated" ' + (n.curated || (n.persona && n.persona.curated) ? 'checked' : '') + ' /> In curated set (hand-vetted shortlist)</label>' +
-        '<label style="font-size:12px"><input type="checkbox" id="npc-active" ' + (n.active ? 'checked' : '') + ' /> Active in discovery</label>' +
-        '<label style="font-size:12px"><input type="checkbox" id="npc-ai" ' + (n.aiEnabled ? 'checked' : '') + ' /> AI replies (falls back to the messages above if the AI is unavailable)</label>' +
-        (n.photoReview === 'quarantine'
-          ? '<span class="muted" style="font-size:12px">Photo quarantined: ' + esc(n.quarantineReason || 'reads as generated') + ' — replace the photos and release it.</span>'
-          : '') +
-      '</div>' +
+      (isAdmin()
+        ? selectField('verificationStatus', 'Verification', n.verificationStatus, [['verified', 'Verified — seal shown'], ['pending', 'Pending review'], ['not_started', 'Not verified']]) +
+          '<div class="decision" style="padding:8px 18px;gap:12px">' +
+            '<label style="font-size:12px"><input type="checkbox" id="npc-greeter" ' + (n.persona && n.persona.greeter ? 'checked' : '' ) + ' /> Greeter (proactively messages new matches)</label>' +
+            '<label style="font-size:12px"><input type="checkbox" id="npc-curated" ' + (n.curated || (n.persona && n.persona.curated) ? 'checked' : '') + ' /> In curated set (hand-vetted shortlist)</label>' +
+            '<label style="font-size:12px"><input type="checkbox" id="npc-active" ' + (n.active ? 'checked' : '') + ' /> Active in discovery</label>' +
+            '<label style="font-size:12px"><input type="checkbox" id="npc-ai" ' + (n.aiEnabled ? 'checked' : '') + ' /> AI replies (falls back to the messages above if the AI is unavailable)</label>' +
+            (n.photoReview === 'quarantine'
+              ? '<span class="muted" style="font-size:12px">Photo quarantined: ' + esc(n.quarantineReason || 'reads as generated') + ' — replace the photos and release it.</span>'
+              : '') +
+          '</div>'
+        : '<div class="decision" style="padding:8px 18px;gap:12px">' +
+            '<span class="muted" style="font-size:12px">Verification: <b>' + esc(n.verificationStatus || 'not_started') + '</b> · ' + esc(n.active ? 'live in discovery' : 'paused') + ' · ' + esc(n.curated ? 'in the curated set' : 'pool persona') + ' · ' + esc(n.aiEnabled ? 'AI replies on' : 'scripted replies') + '</span>' +
+            '<label style="font-size:12px"><input type="checkbox" id="npc-greeter" ' + (n.persona && n.persona.greeter ? 'checked' : '' ) + ' /> Greeter (proactively messages new matches)</label>' +
+            '<span class="muted" style="font-size:12px">Only an admin can change verification, activation, the curated flag, AI replies or release a quarantined photo.</span>' +
+            (n.photoReview === 'quarantine'
+              ? '<span class="muted" style="font-size:12px">Photo quarantined: ' + esc(n.quarantineReason || 'reads as generated') + '. Upload a replacement — an admin releases it.</span>'
+              : '') +
+          '</div>') +
       '<div class="decision" style="padding:12px 18px"><button class="btn primary" id="npc-save" type="button" style="margin-top:0">Save persona</button></div>');
 
     var renderPhotos = function () {
@@ -895,44 +1269,46 @@
         var answer = value('prompt-a-' + pj);
         if (question && answer) prompts.push({ id: (existingPrompts[pj] && existingPrompts[pj].id) || ('p' + prompts.length), question: question, answer: answer });
       }
-      api('/npcs/' + encodeURIComponent(npcId), {
-        method: 'PATCH',
-        body: {
-          name: name,
-          birthDate: value('birthDate'),
-          gender: value('gender'),
-          pronouns: value('pronouns'),
-          professionCategory: value('professionCategory'),
-          professionTitle: value('professionTitle'),
-          companyOrOrg: value('companyOrOrg'),
-          service: value('service'),
-          orgRole: value('orgRole'),
-          skill: value('skill'),
-          dutyStation: value('dutyStation'),
-          educationLevel: value('educationLevel'),
-          almaMater: value('almaMater'),
-          city: value('city'),
-          state: value('state'),
-          countryCode: value('countryCode').toUpperCase(),
-          bio: value('bio'),
-          datingGoal: value('datingGoal'),
-          verificationStatus: value('verificationStatus'),
-          interests: interests,
-          prompts: prompts,
-          lifestyle: {
-            exercise: value('exercise'), drinking: value('drinking'),
-            smoking: value('smoking'), pets: value('pets')
-          },
-          values: {
-            faith: value('faith'), faithImportance: value('faithImportance'),
-            familyPlans: value('familyPlans')
-          },
-          persona: persona,
-          curated: sheet.querySelector('#npc-curated').checked,
-          active: sheet.querySelector('#npc-active').checked,
-          aiEnabled: sheet.querySelector('#npc-ai').checked
-        }
-      }).then(function () {
+      var payload = {
+        name: name,
+        birthDate: value('birthDate'),
+        gender: value('gender'),
+        pronouns: value('pronouns'),
+        professionCategory: value('professionCategory'),
+        professionTitle: value('professionTitle'),
+        companyOrOrg: value('companyOrOrg'),
+        service: value('service'),
+        orgRole: value('orgRole'),
+        skill: value('skill'),
+        dutyStation: value('dutyStation'),
+        educationLevel: value('educationLevel'),
+        almaMater: value('almaMater'),
+        city: value('city'),
+        state: value('state'),
+        countryCode: value('countryCode').toUpperCase(),
+        bio: value('bio'),
+        datingGoal: value('datingGoal'),
+        interests: interests,
+        prompts: prompts,
+        lifestyle: {
+          exercise: value('exercise'), drinking: value('drinking'),
+          smoking: value('smoking'), pets: value('pets')
+        },
+        values: {
+          faith: value('faith'), faithImportance: value('faithImportance'),
+          familyPlans: value('familyPlans')
+        },
+        persona: persona
+      };
+      // Publishing controls are admin-only; sending them as a moderator is a
+      // 403 by design, so leave them out of the patch entirely.
+      if (isAdmin()) {
+        payload.verificationStatus = value('verificationStatus');
+        payload.curated = sheet.querySelector('#npc-curated').checked;
+        payload.active = sheet.querySelector('#npc-active').checked;
+        payload.aiEnabled = sheet.querySelector('#npc-ai').checked;
+      }
+      api('/npcs/' + encodeURIComponent(npcId), { method: 'PATCH', body: payload }).then(function () {
         if (!photosChanged) return null;
         return api('/npcs/' + encodeURIComponent(npcId) + '/photos', { method: 'POST', body: { photos: photos } });
       }).then(function () {
@@ -1171,12 +1547,20 @@
 
     var thread = button.closest('[data-thread]');
     if (thread && button.dataset.action === 'open-thread') { openThread(thread.dataset.thread); return; }
+    if (thread && button.dataset.action === 'claim-thread') { claimThread(thread.dataset.thread); return; }
+    if (thread && button.dataset.action === 'release-thread') { releaseThread(thread.dataset.thread); return; }
+    if (thread && button.dataset.action === 'escalate-thread') {
+      var threadRecord = state.threads.find(function (t) { return String(t.id) === thread.dataset.thread; });
+      escalateThread(thread.dataset.thread, Boolean(threadRecord && threadRecord.escalatedAt));
+      return;
+    }
 
     var npc = button.closest('[data-npc]');
     if (npc) {
       if (button.dataset.action === 'npc-edit') { editNpc(npc.dataset.npc); return; }
       if (button.dataset.action === 'npc-scripts') { editNpcScripts(npc.dataset.npc); return; }
       if (button.dataset.action === 'npc-photos') { editNpcPhotos(npc.dataset.npc); return; }
+      if (button.dataset.action === 'npc-assign') { openAssignSheet(npc.dataset.npc); return; }
       if (button.dataset.action === 'npc-curate') {
         var personaRecord = state.npcs.find(function (x) { return x.id === npc.dataset.npc; });
         var inSet = !(personaRecord && (personaRecord.curated || (personaRecord.persona || {}).curated));

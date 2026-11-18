@@ -9,7 +9,9 @@ writes that can stop halfway. Each section lists the real states, the writers,
 the bug that existed, and the invariant now enforced.
 
 The database changes live in
-`supabase/migrations/20261112000000_state_invariants.sql`. Never edit applied
+`supabase/migrations/20261112000000_state_invariants.sql`; the staff, assignment
+and thread-claim invariants (§19–§21) live in
+`supabase/migrations/20261118000000_moderators.sql`. Never edit applied
 migrations; add a new one.
 
 ## 1. Account standing (`profiles.blocked_us` + `profiles.account_status`)
@@ -197,7 +199,47 @@ migrations; add a new one.
   auto-activate a curated persona. The console's curated filter and overview
   card read the same tag.
 
-## Intentionally unchanged
+## 19. Staff role and scope (`wassaa_admin_users.role`)
+
+- **States:** owner, admin, moderator, suspended.
+- **Writers before:** one allowlist row meant full access; there was no way to
+  delegate persona work without also delegating sanctions, appeals and audit.
+- **Invariant:** owner > admin > moderator, enforced in one place
+  (`staffCapabilities` / the route whitelist). Moderators are refused anything
+  outside `MODERATOR_PATHS` with `403`, not merely hidden in the UI. The
+  publish-only fields (`active`, `curated`, `aiEnabled`, `verificationStatus`,
+  releasing a photo) are rejected for moderators at the API even if a crafted
+  request sends them. A suspended account is refused at the door and its claims
+  are released; assignments survive so reactivation resumes the desk. The last
+  owner cannot be demoted, suspended or removed.
+
+## 20. Persona assignment (one active moderator per persona)
+
+- **States:** unassigned, assigned to one moderator, revoked.
+- **Writers before:** none; every admin could edit any persona.
+- **Invariant:** `wassaa_persona_assignments` is history; a partial unique index
+  on `persona_id where revoked_at is null` allows exactly one active row.
+  `wassaa_assign_persona` checks capacity under an advisory lock, revokes the
+  current holder and inserts the new one in a single transaction, so two admins
+  cannot create two owners or overfill a moderator. Reassignment is a move: the
+  previous moderator loses edit and chat access immediately. Revoking a staff
+  row revokes their assignments.
+
+## 21. Thread claim and staff attribution
+
+- **States:** unclaimed, claimed by A (live lease), lease expired, escalated.
+- **Writers before:** `auto_state = 'admin_owned'` only; any staff member could
+  insert a message; nothing recorded which human typed it.
+- **Invariant:** `matches.claimed_by` + `claim_expires_at` (30 minutes) is the
+  lease; an expired lease is treated as free, so no sweeper is needed.
+  `wassaa_staff_send` locks the match row and performs check → claim/renew →
+  `auto_state='admin_owned'` → clear escalation → insert in one transaction. A
+  second operator gets `409` while the lease is live; admins can force-release.
+  `messages.sent_by_staff` / `sent_by_name` are console-only; `messageRow` (the
+  member route) omits them, so members cannot tell personas from staff.
+  `admin_audit.actor_user_id` records the operator id alongside the display name.
+
+
 
 - A restriction is visible and read-only; it does not hide the profile from
   others. A ban hides it from discovery and blocks new interactions.

@@ -85,8 +85,10 @@
           <button class="tab" data-tab="threads" role="tab">Chats <span id="count-threads" class="pill">0</span></button>
           <button class="tab" data-tab="npcs" role="tab">Personas</button>
           <button class="tab" data-tab="audit" role="tab">Audit log</button>
+          <button class="tab hidden" id="tab-staff" data-tab="staff" role="tab">Staff</button>
         </nav>
         <div class="top-actions">
+          <span id="role-chip" class="flag"></span>
           <span id="storage-flag" class="flag"></span>
           <button id="theme" class="btn ghost" type="button" aria-label="Toggle dark mode">Dark mode</button>
           <button id="refresh" class="btn ghost" type="button">Refresh</button>
@@ -146,7 +148,7 @@
         </section>
 
         <section id="panel-npcs" class="panel hidden">
-          <p class="hint">The persona pool real members swipe and match with. <strong>Add to set</strong> pulls a persona into the hand-vetted shortlist, <strong>Activate</strong> puts it in front of members, and <strong>Pause</strong> takes it out. Filter by <strong>Curated set</strong> to see just the shortlist.</p>
+          <p class="hint">The persona pool real members swipe and match with. <strong>Add to set</strong> pulls a persona into the hand-vetted shortlist, <strong>Activate</strong> puts it in front of members, and <strong>Pause</strong> takes it out. Filter by <strong>Curated set</strong> to see just the shortlist. Assign a persona to a moderator and it becomes their desk: they can edit it, write its lines and answer its chats, but only you publish it.</p>
           <div class="toolbar">
             <input id="npc-search" type="search" placeholder="Search by name…" />
             <select id="npc-country"><option value="">All countries</option></select>
@@ -172,6 +174,10 @@
               <option value="">All personas</option>
               <option value="1">Curated set only</option>
             </select>
+            <select id="npc-assigned">
+              <option value="">Any owner</option>
+              <option value="none">Unassigned</option>
+            </select>
             <button id="npc-search-btn" class="btn" type="button">Apply</button>
             <button id="npc-clear" class="btn ghost" type="button">Clear</button>
             <span id="npc-count" class="state">0 personas</span>
@@ -185,6 +191,21 @@
         <section id="panel-audit" class="panel hidden">
           <p class="hint">Every decision on this console is appended here. Entries cannot be edited or removed from the panel.</p>
           <div id="audit" class="audit"></div>
+        </section>
+
+        <section id="panel-staff" class="panel hidden">
+          <p class="hint">Staff are added by the email they sign in with. A <strong>moderator</strong> works only the personas assigned to them: edit the profile, write its lines, add photos and answer its chats. Only an admin can activate a persona, release a quarantined photo, seal verification, sanction a member or read the audit log. The <strong>owner</strong> also manages this list; ownership can be transferred to exactly one other account.</p>
+          <div class="toolbar">
+            <input id="staff-email" type="email" placeholder="Email they sign in with" style="min-width:220px" />
+            <input id="staff-name" type="text" maxlength="60" placeholder="Display name" />
+            <select id="staff-role">
+              <option value="moderator">Moderator</option>
+              <option value="admin">Admin</option>
+            </select>
+            <input id="staff-limit" type="number" min="1" max="200" value="30" title="How many personas they can hold" style="width:92px" />
+            <button id="staff-add" class="btn primary" type="button">Add staff</button>
+          </div>
+          <div id="staff" class="queue"></div>
         </section>
       </main>
 
