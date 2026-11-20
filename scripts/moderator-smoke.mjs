@@ -135,6 +135,21 @@ async function createProfile(key, { authUser = '', isNpc = false, displayName = 
     dating_goal: isNpc ? null : 'long_term',
     match_preferences: isNpc ? null : { gender: 'everyone', minAge: 18, maxAge: 60 }
   };
+  // Signing up creates a skeleton profile through wassaa_on_profile_signup, so
+  // a member fixture is an update of that row, not a second insert.
+  if (!isNpc) {
+    const found = await rest(`/profiles?auth_user_id=eq.${row.auth_user_id}&select=id`);
+    const existingId = found.status === 200 ? found.data?.[0]?.id : null;
+    if (existingId) {
+      const patch = { ...row };
+      delete patch.id;
+      delete patch.auth_user_id;
+      const r = await rest(`/profiles?id=eq.${existingId}`, { method: 'PATCH', body: patch, headers: { Prefer: 'return=representation' } });
+      if (r.status !== 200) throw new Error(`createProfile(${key}) failed (${r.status}) ${JSON.stringify(r.data)}`);
+      created.profileIds[key] = existingId;
+      return existingId;
+    }
+  }
   const r = await rest('/profiles', { method: 'POST', body: row, headers: { Prefer: 'return=representation' } });
   if (r.status !== 201) throw new Error(`createProfile(${key}) failed (${r.status}) ${JSON.stringify(r.data)}`);
   created.profileIds[key] = id;
@@ -323,6 +338,9 @@ try {
   check('moderator loses the persona immediately', (afterUnassign.data?.total || 0) === 0, `total ${afterUnassign.data?.total}`);
   const threadAfterUnassign = await api(`/admin/threads/${created.matchId}/messages`, { token: tokens.mod });
   check('moderator loses the thread immediately', threadAfterUnassign.status === 403, `status ${threadAfterUnassign.status}`);
+} catch (e) {
+  console.error('\n  FATAL  ' + (e && (e.stack || e.message) ? (e.stack || e.message) : e));
+  failed += 1;
 } finally {
   try { await cleanup(); } catch (e) { console.log(`  WARN  cleanup incomplete — ${e.message}`); }
   console.log(`\n${passed} passed, ${failed} failed`);
