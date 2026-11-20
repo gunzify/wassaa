@@ -249,9 +249,12 @@ always shown but not editable; transfer ownership first.
 
 1. `npx supabase db push` — migration first; the API writes `actor_user_id` on
    every audit row and calls RPCs that only exist after it.
-2. `npx supabase functions deploy api --no-verify-jwt` (or the project's deploy
-   script).
-3. Verify: `node scripts/moderator-smoke.mjs` (creates and removes its fixtures).
+2. `npx supabase functions deploy api --project-ref avlbsficfejvwokxkgyl --no-verify-jwt`
+   (or the project's deploy script). The CLI login must belong to the
+   `wassaa-dating` org; a token from another account gets `403` on the functions
+   API even though `db push` (database password) still works.
+3. Verify `/health` reports `revision: moderators-2026-11-18`, then run
+   `node scripts/moderator-smoke.mjs` (creates and removes its fixtures).
 4. The earliest existing admin becomes owner. Sign in and confirm the **Staff**
    tab appears. Add the first moderator by the email they used to sign in.
 
