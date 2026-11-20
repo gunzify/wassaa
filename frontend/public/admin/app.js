@@ -650,6 +650,9 @@
             '<button class="btn" data-action="npc-edit" type="button">Edit</button>' +
             '<button class="btn" data-action="npc-scripts" type="button">Messages</button>' +
             '<button class="btn" data-action="npc-photos" type="button">Photos</button>' +
+            (/^https?:\/\//i.test(String(persona.photoSourceUrl || ''))
+              ? '<a class="btn" href="' + esc(persona.photoSourceUrl) + '" target="_blank" rel="noopener noreferrer" title="Admin-only photo source">Source</a>'
+              : '') +
             (isAdmin()
               ? '<button class="btn" data-action="npc-curate" type="button">' + (curated ? 'Remove from set' : 'Add to set') + '</button>' +
                 '<button class="btn ' + (n.active ? 'reject' : 'approve') + '" data-action="npc-toggle" type="button">' + (n.active ? 'Pause' : 'Activate') + '</button>' +
@@ -1122,6 +1125,23 @@
         '<p class="muted" style="font-size:11px;margin:6px 0 0">First photo is the portrait members see first. The name and photos save together.</p>' +
       '</div>';
 
+    // A working link back to the source gallery for this face. It is stored in
+    // the persona document, which only the console reads, so members never get
+    // it; moderators can use it on the personas assigned to them.
+    var sourceUrl = String((n.persona || {}).photoSourceUrl || '');
+    var sourceBlock =
+      '<div class="decision" style="padding:8px 18px;align-items:flex-start">' +
+        '<span style="flex:0 0 120px;font-size:12px;padding-top:8px" class="muted">Photo source</span>' +
+        '<div style="flex:1;min-width:0">' +
+          '<input type="url" id="npc-photo-source" value="' + esc(sourceUrl) + '" maxlength="500" placeholder="https://… folder, drive or gallery for this face" />' +
+          '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">' +
+            '<button class="btn ghost" id="npc-photo-source-open" type="button" style="margin-top:0"' + (sourceUrl ? '' : ' disabled') + '>Open link</button>' +
+            '<button class="btn ghost" id="npc-photo-source-copy" type="button" style="margin-top:0"' + (sourceUrl ? '' : ' disabled') + '>Copy link</button>' +
+          '</div>' +
+          '<p class="muted" style="font-size:11px;margin:6px 0 0">Admin and assigned moderator only — members never see this. Paste the stock-photo page, drive folder or gallery for this face, then open it to download more photos.</p>' +
+        '</div>' +
+      '</div>';
+
     var nameBlock =
       '<div class="decision" style="padding:8px 18px;align-items:flex-start">' +
         '<span style="flex:0 0 120px;font-size:12px;padding-top:8px" class="muted">Name</span>' +
@@ -1151,6 +1171,7 @@
     var values = n.values || {};
     var sheet = openSheet('Edit persona — ' + n.name,
       photoBlock +
+      sourceBlock +
       section('Identity', 'What the card reads first.') +
       nameBlock +
       field('birthDate', 'Date of birth', n.birthDate, 'YYYY-MM-DD') +
@@ -1230,6 +1251,32 @@
     };
     renderPhotos();
 
+    var sourceInput = sheet.querySelector('#npc-photo-source');
+    var sourceOpen = sheet.querySelector('#npc-photo-source-open');
+    var sourceCopy = sheet.querySelector('#npc-photo-source-copy');
+    var validSource = function () { return /^https?:\/\//i.test((sourceInput.value || '').trim()); };
+    var syncSource = function () {
+      sourceOpen.disabled = !validSource();
+      sourceCopy.disabled = !(sourceInput.value || '').trim();
+    };
+    sourceInput.addEventListener('input', syncSource);
+    sourceOpen.addEventListener('click', function () {
+      if (!validSource()) { toast('Add an http:// or https:// link first.', true); return; }
+      window.open(sourceInput.value.trim(), '_blank', 'noopener,noreferrer');
+    });
+    sourceCopy.addEventListener('click', function () {
+      var url = (sourceInput.value || '').trim();
+      if (!url) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(function () { toast('Source link copied'); },
+          function () { toast('Could not copy — select the link and copy it.', true); });
+      } else {
+        sourceInput.select();
+        try { document.execCommand('copy'); toast('Source link copied'); }
+        catch (e) { toast('Could not copy — select the link and copy it.', true); }
+      }
+    });
+
     sheet.querySelector('#npc-photo-upload').addEventListener('click', function () {
       var file = sheet.querySelector('#npc-photo-file').files[0];
       if (!file) { toast('Choose an image first.', true); return; }
@@ -1258,6 +1305,11 @@
       var interests = (sheet.querySelector('#npc-interests').value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
       var persona = Object.assign({}, n.persona || {}, { greeter: sheet.querySelector('#npc-greeter').checked });
       var value = function (key) { var el = sheet.querySelector('#npc-' + key); return el ? (el.value || '').trim() : ''; };
+      var source = value('photo-source');
+      if (source && !/^https?:\/\//i.test(source)) {
+        toast('The photo source link must start with http:// or https://.', true);
+        return;
+      }
       // Branch and photo pool live in the persona document, not as columns.
       var branch = value('branch');
       var race = value('race');
@@ -1290,6 +1342,7 @@
         datingGoal: value('datingGoal'),
         interests: interests,
         prompts: prompts,
+        photoSourceUrl: source,
         lifestyle: {
           exercise: value('exercise'), drinking: value('drinking'),
           smoking: value('smoking'), pets: value('pets')

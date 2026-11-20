@@ -53,6 +53,7 @@ hide what the server would refuse.
 | See all personas | yes | yes | assigned only |
 | Edit persona profile, bio, prompts, lifestyle | yes | yes | assigned only |
 | Add/replace photos | yes | yes | assigned only (upload is a proposal; admin releases) |
+| Attach the admin-only photo source link | yes | yes | assigned only |
 | Write persona message scripts | yes | yes | assigned only |
 | Flag a photo as generated | yes | yes | assigned only |
 | Release a quarantined photo | yes | yes | **no** |
@@ -234,6 +235,11 @@ always shown but not editable; transfer ownership first.
   `verificationStatus` — the API would 403 otherwise.
 - Chats show a `waiting for a reply` badge, last line with operator attribution,
   claim state, **Take over / Release**, and **Escalate**.
+- The persona edit sheet carries a **Photo source** field: an `http(s)` link to
+  the folder, drive or stock-photo page the face came from, with **Open link**
+  and **Copy link**. It is stored as `profiles.npc.photoSourceUrl`, is editable
+  by an assigned moderator, and is never serialised by `profileForViewer`, so
+  members cannot see it. Cards with a source render a **Source** shortcut.
 - The thread sheet shows the lease banner, disables the composer when someone
   else holds it, and labels persona bubbles with `· via <operator>` (console only).
 - **Staff** tab: add by email, role, persona limit; per-row save, suspend,

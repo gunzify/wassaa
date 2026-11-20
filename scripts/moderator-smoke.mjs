@@ -240,6 +240,13 @@ try {
 
   const edited = await api(`/admin/npcs/${personaId}`, { method: 'PATCH', token: tokens.mod, body: { bio: 'QA moderator wrote this bio.' } });
   check('moderator edits the assigned persona', edited.status === 200, `status ${edited.status}`);
+  const sourceUrl = `https://example.com/qa-source/${stamp}`;
+  const sourced = await api(`/admin/npcs/${personaId}`, { method: 'PATCH', token: tokens.mod, body: { photoSourceUrl: sourceUrl } });
+  check('moderator attaches a photo source link', sourced.status === 200, `status ${sourced.status}`);
+  const sourcedList = await api(`/admin/npcs?search=${encodeURIComponent(`QA Persona ${stamp}`)}`, { token: tokens.mod });
+  check('the source link comes back to the moderator', sourcedList.data?.npcs?.[0]?.persona?.photoSourceUrl === sourceUrl, String(sourcedList.data?.npcs?.[0]?.persona?.photoSourceUrl));
+  const badSource = await api(`/admin/npcs/${personaId}`, { method: 'PATCH', token: tokens.mod, body: { photoSourceUrl: 'javascript:alert(1)' } });
+  check('a non-http source link is refused', badSource.status === 400, `status ${badSource.status}`);
   for (const [label, body] of [
     ['activation', { active: true }],
     ['the curated set', { curated: true }],
@@ -291,6 +298,8 @@ try {
   const memberRead = await api(`/matches/${created.matchId}/messages`, { token: tokens.member });
   check('member reads the thread', memberRead.status === 200, `status ${memberRead.status}`);
   check('staff attribution never reaches the member', !JSON.stringify(memberRead.data || {}).includes('sentBy'), 'no sentBy fields');
+  const memberMatches = await api('/matches', { token: tokens.member });
+  check('the admin-only photo source never reaches the member', !JSON.stringify(memberMatches.data || {}).includes('photoSourceUrl'), 'no photoSourceUrl field');
 
   const forceRelease = await api(`/admin/threads/${created.matchId}/release`, { method: 'POST', token: tokens.admin });
   check('admin force-releases the lease', forceRelease.status === 200, `status ${forceRelease.status}`);

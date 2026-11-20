@@ -1444,7 +1444,30 @@ async function adminRoute(db: ReturnType<typeof createClient>, user: Row, path: 
       // Merge, don't replace. `npc` holds `curated`, `photoState` and other
       // flags the edit form does not send; replacing it silently un-curated the
       // profile and made the persona look ready when it had no chosen face.
-      update.npc = { ...(npc.npc || {}), ...(b.persona as Row) };
+      const personaPatch = { ...(b.persona as Row) };
+      // The source link has its own validated field below; never let a raw
+      // persona blob carry an unchecked URL (a `javascript:` link is one click
+      // away from running in the console).
+      delete personaPatch.photoSourceUrl;
+      update.npc = { ...(npc.npc || {}), ...personaPatch };
+    }
+    if (b.photoSourceUrl !== undefined) {
+      // Staff-only working note: where this face came from. It lives in the
+      // persona document so `profileForViewer` can never serialise it to a
+      // member, and it is the download/upload shortcut the operator needs when
+      // one photo is not enough.
+      const raw = typeof b.photoSourceUrl === 'string' ? b.photoSourceUrl.trim() : '';
+      if (raw) {
+        if (raw.length > 500) return err('The photo source link is too long (500 characters max).', 400, origin);
+        let protocol = '';
+        try { protocol = new URL(raw).protocol; } catch { protocol = ''; }
+        if (protocol !== 'http:' && protocol !== 'https:') {
+          return err('The photo source link must start with http:// or https://.', 400, origin);
+        }
+      }
+      const persona = { ...((update.npc as Row) || (npc.npc as Row) || {}) };
+      if (raw) persona.photoSourceUrl = raw; else delete persona.photoSourceUrl;
+      update.npc = persona;
     }
     // The curated set is a flag inside the persona document, not a column. It
     // marks the hand-vetted profiles the deck ships with; the rest of the pool
